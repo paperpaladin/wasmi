@@ -484,7 +484,7 @@ static void exec(uint32_t fidx, uint32_t base) {
 	uint32_t pc = 0;
 	uint32_t cbase = csp;
 
-	calldepth++;
+	if (++calldepth > CALLDEPTH_MAX) trap("call-depth");
 	if (csp + f->maxctrl > CSTACK_MAX) trap("stack-overflow");
 
 	/* Outermost label: branching to it is a return. */
@@ -569,6 +569,7 @@ static void exec(uint32_t fidx, uint32_t base) {
 		}
 		case OP_RETURN: RET();
 
+		case OP_CALL: do_call(uleb(c, &pc)); break;
 
 		case OP_DROP: vsp--; break;
 		case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
