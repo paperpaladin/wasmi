@@ -477,6 +477,293 @@ def s_conv():
 
 
 # ------------------------------------------------------------------ control flow
+@suite
+def s_control():
+    m = Mod()
+
+    # if / else
+    m.func("absish", ["i32"], ["i32"], """
+        local.get 0
+        i32.const 0
+        i32.lt_s
+        if i32
+          i32.const 0
+          local.get 0
+          i32.sub
+        else
+          local.get 0
+        end
+        end""")
+
+    # block with a result + br carrying a value
+    m.func("clamp10", ["i32"], ["i32"], """
+        block i32
+          local.get 0
+          i32.const 10
+          i32.gt_s
+          if
+            i32.const 10
+            br 1
+          end
+          local.get 0
+        end
+        end""")
+
+    # loop: sum 1..n with br_if as the back edge
+    m.func("sum", ["i32"], ["i32"], locals=["i32", "i32"], body="""
+        block
+          loop
+            local.get 1
+            local.get 0
+            i32.gt_s
+            br_if 1
+            local.get 2
+            local.get 1
+            i32.add
+            local.set 2
+            local.get 1
+            i32.const 1
+            i32.add
+            local.set 1
+            br 0
+          end
+        end
+        local.get 2
+        end""")
+
+    # br_table with a default, 3 labels deep.  local 1 is pre-seeded with the
+    # default answer, so "the default arm was taken" is observable.
+    m.func("sw", ["i32"], ["i32"], locals=["i32"], body="""
+        i32.const 40
+        local.set 1
+        block
+          block
+            block
+              block
+                local.get 0
+                br_table 0 1 2 3
+              end
+              i32.const 10
+              local.set 1
+              br 2
+            end
+            i32.const 20
+            local.set 1
+            br 1
+          end
+          i32.const 30
+          local.set 1
+          br 0
+        end
+        local.get 1
+        end""")
+
+    # early return from inside two blocks
+    m.func("ret", ["i32"], ["i32"], """
+        block
+          block
+            local.get 0
+            i32.eqz
+            br_if 0
+            i32.const 7
+            return
+          end
+        end
+        i32.const -7
+        end""")
+
+    # select
+    m.func("sel", ["i32", "i32", "i32"], ["i32"],
+           "local.get 1\nlocal.get 2\nlocal.get 0\nselect\nend")
+
+    # deeply nested blocks: 32 levels, with a br that unwinds all of them
+    N = 32
+    body = []
+    for _ in range(N):
+        body.append("block")
+    body += ["local.get 0", "i32.const 1", "i32.add", "local.set 1",
+             "local.get 0", "br_if %d" % (N - 1),
+             "local.get 1", "i32.const 100", "i32.add", "local.set 1"]
+    for k in range(N):
+        body.append("end")
+        if k < N - 1:
+            body += ["local.get 1", "i32.const 1", "i32.add", "local.set 1"]
+    body += ["local.get 1", "end"]
+    m.func("deep", ["i32"], ["i32"], locals=["i32"], body="\n".join(body))
+
+    # loop as a tail-recursive-style countdown producing a value
+    m.func("mulrep", ["i32", "i32"], ["i32"], locals=["i32"], body="""
+        i32.const 1
+        local.set 2
+        block
+          loop
+            local.get 1
+            i32.eqz
+            br_if 1
+            local.get 2
+            local.get 0
+            i32.mul
+            local.set 2
+            local.get 1
+            i32.const 1
+            i32.sub
+            local.set 1
+            br 0
+          end
+        end
+        local.get 2
+        end""")
+
+    m.func("boom", ["i32"], ["i32"], """
+        local.get 0
+        if
+          unreachable
+        end
+        i32.const 1
+        end""")
+
+    # ---- Python reference ------------------------------------------------
+    def py_sum(n):
+        t, i = 0, 0
+        while not (i > s32(n)):
+            t = s32(t + i)
+            i = s32(i + 1)
+        return t
+
+    def py_deep(a):
+        # arg != 0 -> br unwinds all 32 blocks, skipping every +1
+        if s32(a) != 0:
+            return s32(s32(a) + 1)
+        return s32(1 + 100 + (N - 1))
+
+    def py_mulrep(x, n):
+        acc = 1
+        n = s32(n)
+        while n != 0:
+            acc = s32(acc * s32(x))
+            n = s32(n - 1)
+        return acc
+
+    cases = []
+    for v in [0, 1, -1, 5, -5, 0x7FFFFFFF, -0x80000000, 100, -100]:
+        cases.append((str(s32(0 - s32(v)) if s32(v) < 0 else s32(v)), "absish", [v]))
+        cases.append((str(10 if s32(v) > 10 else s32(v)), "clamp10", [v]))
+        cases.append((str(7 if s32(v) != 0 else -7), "ret", [v]))
+        cases.append((str(py_deep(v)), "deep", [v]))
+    for n in [0, 1, 2, 3, 10, 100, 1000, -1, -5]:
+        cases.append((str(py_sum(n)), "sum", [n]))
+    for i in [0, 1, 2, 3, 4, 7, -1, 100]:
+        cases.append((str({0: 10, 1: 20, 2: 30}.get(u32(i), 40)), "sw", [i]))
+    for c in [0, 1, -1, 2]:
+        cases.append((str(11 if c else 22), "sel", [c, 11, 22]))
+    for x, n in [(2, 10), (3, 5), (-2, 3), (7, 0), (10, 10), (-3, 7), (2, 31), (2, 32)]:
+        cases.append((str(py_mulrep(x, n)), "mulrep", [x, n]))
+    cases.append(("trap:unreachable", "boom", [1]))
+    cases.append(("1", "boom", [0]))
+    return emit("control", m, cases)
+
+
+# -------------------------------------------------------------------- recursion
+@suite
+def s_recursion():
+    m = Mod()
+    fact = m.func("fact", ["i64"], ["i64"], """
+        local.get 0
+        i64.const 1
+        i64.le_s
+        if i64
+          i64.const 1
+        else
+          local.get 0
+          local.get 0
+          i64.const 1
+          i64.sub
+          call 0
+          i64.mul
+        end
+        end""")
+    assert fact == 0
+    m.func("fib", ["i32"], ["i32"], """
+        local.get 0
+        i32.const 2
+        i32.lt_s
+        if i32
+          local.get 0
+        else
+          local.get 0
+          i32.const 1
+          i32.sub
+          call 1
+          local.get 0
+          i32.const 2
+          i32.sub
+          call 1
+          i32.add
+        end
+        end""")
+    # mutual recursion: is_even / is_odd
+    m.func("is_even", ["i32"], ["i32"], """
+        local.get 0
+        i32.eqz
+        if i32
+          i32.const 1
+        else
+          local.get 0
+          i32.const 1
+          i32.sub
+          call 3
+        end
+        end""")
+    m.func("is_odd", ["i32"], ["i32"], """
+        local.get 0
+        i32.eqz
+        if i32
+          i32.const 0
+        else
+          local.get 0
+          i32.const 1
+          i32.sub
+          call 2
+        end
+        end""")
+    # unbounded recursion must trap, not smash the C stack
+    m.func("forever", ["i32"], ["i32"], """
+        local.get 0
+        i32.const 1
+        i32.add
+        call 4
+        end""")
+
+    def py_fact(n):
+        if s64(n) <= 1:
+            return 1
+        acc = 1
+        for k in range(2, s64(n) + 1):
+            acc = u64(acc * k)
+        return s64(acc)
+
+    def py_fib(n):
+        n = s32(n)
+        if n < 2:
+            return n
+        a, b = 0, 1
+        for _ in range(n - 1):
+            a, b = b, s32(a + b)
+        return b
+
+    cases = []
+    for n in [0, 1, 2, 3, 5, 10, 20, 25, -1]:
+        cases.append((str(py_fact(n)), "fact", [n]))
+    for n in [0, 1, 2, 3, 10, 20, 25, -1, -5]:
+        cases.append((str(py_fib(n)), "fib", [n]))
+    for n in [0, 1, 2, 7, 10, 101]:
+        cases.append((str(1 if s32(n) % 2 == 0 else 0), "is_even", [n]))
+        cases.append((str(1 if s32(n) % 2 == 1 else 0), "is_odd", [n]))
+    cases.append(("trap:call-depth", "forever", [0]))
+    return emit("recursion", m, cases)
+
+
+# ----------------------------------------------------------------- memory
 # ========================================================================= main
 def main():
     total = 0
