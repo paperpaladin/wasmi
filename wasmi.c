@@ -192,6 +192,8 @@ static void load_module(const uint8_t *buf, size_t len) {
 	rd_bytes(&r, &ver, 4);
 	if (ver != 1) die("unsupported wasm version %u", ver);
 
+	uint32_t *fdecl = NULL, nfdecl = 0;
+	const uint8_t *codesec = NULL; size_t codelen = 0;
 	int last_id = 0;
 
 	while (r.i < r.n) {
@@ -222,6 +224,15 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 3: { /* function */
+			nfdecl = rd_u32v(&s);
+			fdecl = xmalloc(sizeof(uint32_t) * (nfdecl ? nfdecl : 1));
+			for (uint32_t i = 0; i < nfdecl; i++) {
+				fdecl[i] = rd_u32v(&s);
+				if (fdecl[i] >= M.ntypes) die("function %u: type index out of range", i);
+			}
+			break;
+		}
 		case 7: { /* export */
 			M.nexports = rd_u32v(&s);
 			M.exports = xcalloc(M.nexports, sizeof(Export));
@@ -236,15 +247,56 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 10: /* code: deferred until we know the function types */
+			codesec = s.p; codelen = s.n;
+			break;
 		default: break;   /* sections we cannot handle yet are skipped */
 		}
 	}
 
+	/* ------- code section ------- */
+	if (nfdecl && !codesec) die("function section without code section");
+	M.nfuncs = nfdecl;
+	M.funcs = xcalloc(M.nfuncs ? M.nfuncs : 1, sizeof(Func));
+	for (uint32_t i = 0; i < M.nfuncs; i++) M.funcs[i].type = fdecl[i];
+
+	if (codesec) {
+		Rd s = { codesec, codelen, 0 };
+		uint32_t n = rd_u32v(&s);
+		if (n != M.nfuncs) die("code section has %u bodies but %u functions declared", n, M.nfuncs);
+		for (uint32_t i = 0; i < n; i++) {
+			uint32_t bsz = rd_u32v(&s);
+			if (s.i + bsz > s.n) die("function body %u overruns section", i);
+			Rd b = { s.p + s.i, bsz, 0 };
+			s.i += bsz;
+			Func *f = &M.funcs[i];
+			FType *ft = &M.types[f->type];
+			uint32_t ngroups = rd_u32v(&b);
+			uint32_t nloc = ft->np;
+			uint8_t *lt = xmalloc(64);
+			size_t lcap = 64;
+			for (uint32_t k = 0; k < ft->np; k++) lt[k] = ft->pt[k];
+			for (uint32_t g = 0; g < ngroups; g++) {
+				uint32_t cnt = rd_u32v(&b);
+				uint8_t t = rd_u8(&b); check_valtype(t);
+				if ((uint64_t)nloc + cnt > 100000) die("too many locals");
+				while (nloc + cnt > lcap) { lcap *= 2; lt = realloc(lt, lcap); if (!lt) die("oom"); }
+				for (uint32_t k = 0; k < cnt; k++) lt[nloc + k] = t;
+				nloc += cnt;
+			}
+			f->nlocals = nloc; f->lt = lt;
+			f->code = b.p + b.i; f->clen = (uint32_t)(b.n - b.i);
+			if (f->clen == 0 || f->code[f->clen - 1] != OP_END)
+				die("function body %u does not end with 0x0b", i);
+		}
+		if (s.i != s.n) die("code section has trailing bytes");
+	}
 
 	for (uint32_t i = 0; i < M.nexports; i++) {
 		Export *e = &M.exports[i];
 		if (e->kind == 0 && e->idx >= M.nfuncs) die("export: function index out of range");
 	}
+	free(fdecl);
 }
 
 /* ================================================================== main */
