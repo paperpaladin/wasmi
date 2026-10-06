@@ -436,6 +436,8 @@ static uint32_t calldepth;
 static uint32_t rotl32(uint32_t a, uint32_t k) { k &= 31; return k ? (a << k) | (a >> (32 - k)) : a; }
 static uint32_t rotr32(uint32_t a, uint32_t k) { k &= 31; return k ? (a >> k) | (a << (32 - k)) : a; }
 
+static uint32_t clz32(uint32_t v) { return v ? (uint32_t)__builtin_clz(v) : 32; }
+static uint32_t ctz32(uint32_t v) { return v ? (uint32_t)__builtin_ctz(v) : 32; }
 
 /* Immediate decoders for the hot loop.  No bounds checks here on purpose: the
  * body was fully walked by prepare()/resolve_jumps() before we ever run it, so
@@ -521,6 +523,9 @@ static void exec(uint32_t fidx, uint32_t base) {
 
 
 			/* ------------------------------------------------ i32 arith */
+			case 0x67: PUSH(clz32(P32())); break;
+			case 0x68: PUSH(ctz32(P32())); break;
+			case 0x69: PUSH((uint32_t)__builtin_popcount(P32())); break;
 			case 0x6a: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a + b2)); break; }
 			case 0x6b: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a - b2)); break; }
 			case 0x6c: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a * b2)); break; }
