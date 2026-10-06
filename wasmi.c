@@ -514,6 +514,21 @@ static void exec(uint32_t fidx, uint32_t base) {
 
 
 			/* ------------------------------------------------ i32 arith */
+			case 0x6a: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a + b2)); break; }
+			case 0x6b: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a - b2)); break; }
+			case 0x6c: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a * b2)); break; }
+			case 0x6d: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32();
+				if (b2 == 0) trap("div0");
+				/* INT32_MIN / -1 is not representable: the spec traps, and in C it
+				 * would be undefined behaviour. */
+				if (a == INT32_MIN && b2 == -1) trap("int-overflow");
+				PUSH((uint32_t)(a / b2)); break; }
+			case 0x6e: { uint32_t b2 = P32(), a = P32(); if (!b2) trap("div0"); PUSH(a / b2); break; }
+			case 0x6f: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32();
+				if (b2 == 0) trap("div0");
+				/* INT32_MIN % -1 is 0 by the spec, but UB in C; special-case it. */
+				PUSH(b2 == -1 ? 0u : (uint32_t)(a % b2)); break; }
+			case 0x70: { uint32_t b2 = P32(), a = P32(); if (!b2) trap("div0"); PUSH(a % b2); break; }
 
 
 
