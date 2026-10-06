@@ -1,0 +1,7 @@
+wasmi
+wasmi-asan
+*.o
+core
+core.*
+vgcore.*
+t/fix/
