@@ -110,6 +110,8 @@ static int64_t rd_s64v(Rd *r) { return rd_sv(r, 64); }
 #define VT_F64 0x7c
 
 static void check_valtype(uint8_t t) {
+	if (t == VT_F32 || t == VT_F64)
+		die("f32/f64 are not implemented by this interpreter (module rejected)");
 	if (t != VT_I32 && t != VT_I64) die("unknown value type 0x%02x", t);
 }
 
@@ -162,6 +164,15 @@ enum {
 	OP_I32_WRAP=0xa7, OP_I64_EXT_S=0xac, OP_I64_EXT_U=0xad
 };
 
+/* Opcodes we deliberately refuse: everything float.  Keeping this as an explicit
+ * predicate (rather than "default: die") means a genuinely unknown byte and a
+ * known-but-unimplemented one give different, honest messages. */
+static int is_float_op(uint8_t op) {
+	return (op >= 0x43 && op <= 0x44) || (op >= 0x5b && op <= 0x66) ||
+	       (op >= 0x8b && op <= 0xa6) || (op >= 0xa8 && op <= 0xab) ||
+	       (op >= 0xae && op <= 0xbf) ||
+	       op == 0x2a || op == 0x2b || op == 0x38 || op == 0x39;
+}
 
 /* ------------------------------------------------- blocktype -> label arity */
 static uint32_t blocktype(Rd *r) {
@@ -216,6 +227,9 @@ static void prepare(Func *f) {
 		uint32_t pc = (uint32_t)r.i;
 		uint8_t op = rd_u8(&r);
 		uint32_t pops = 0, pushes = 0;
+
+		if (is_float_op(op))
+			die("opcode 0x%02x is a floating-point instruction; not implemented", op);
 
 		switch (op) {
 		case OP_UNREACHABLE: dead = 1; break;
@@ -457,6 +471,11 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 2: { /* import */
+			uint32_t n = rd_u32v(&s);
+			if (n) die("imports are not supported (%u found); wasmi runs self-contained modules only", n);
+			break;
+		}
 		case 3: { /* function */
 			nfdecl = rd_u32v(&s);
 			fdecl = xmalloc(sizeof(uint32_t) * (nfdecl ? nfdecl : 1));
@@ -483,8 +502,9 @@ static void load_module(const uint8_t *buf, size_t len) {
 		case 10: /* code: deferred until we know the function types */
 			codesec = s.p; codelen = s.n;
 			break;
-		default: break;   /* sections we cannot handle yet are skipped */
+		default: die("unknown section id %u", id);
 		}
+		if (id != 0 && id != 10 && s.i != s.n) die("section %u has %zu trailing bytes", id, s.n - s.i);
 	}
 
 	/* ------- code section ------- */
