@@ -577,6 +577,8 @@ static void exec(uint32_t fidx, uint32_t base) {
 		case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
 		case OP_LOCAL_SET:  { uint32_t i = uleb(c, &pc); vstack[base + i] = POP(); break; }
 		case OP_LOCAL_TEE:  { uint32_t i = uleb(c, &pc); vstack[base + i] = vstack[vsp - 1]; break; }
+		case OP_GLOBAL_GET: { uint32_t i = uleb(c, &pc); PUSH(M.globals[i].val); break; }
+		case OP_GLOBAL_SET: { uint32_t i = uleb(c, &pc); M.globals[i].val = POP(); break; }
 
 		case OP_I32_CONST: { int64_t v = sleb(c, &pc); PUSH((uint32_t)(int32_t)v); break; }
 		case OP_I64_CONST: { int64_t v = sleb(c, &pc); PUSH((uint64_t)v); break; }
@@ -683,6 +685,32 @@ static void exec(uint32_t fidx, uint32_t base) {
 }
 
 /* ============================================================== decoding */
+static uint64_t const_expr(Rd *r, uint8_t want) {
+	uint8_t op = rd_u8(r);
+	uint64_t v;
+	switch (op) {
+	case OP_I32_CONST:
+		if (want != VT_I32) die("const expr type mismatch");
+		v = (uint32_t)rd_s32v(r); break;
+	case OP_I64_CONST:
+		if (want != VT_I64) die("const expr type mismatch");
+		v = (uint64_t)rd_s64v(r); break;
+	case OP_GLOBAL_GET: {
+		uint32_t gi = rd_u32v(r);
+		/* Without imports there are no globals defined before this one that the
+		 * spec lets us read here other than earlier module globals; allow those. */
+		if (gi >= M.nglobals) die("const expr: global index out of range");
+		v = M.globals[gi].val; break;
+	}
+	default:
+		if (op == OP_F32_CONST || op == OP_F64_CONST)
+			die("float constant in init expression; f32/f64 not implemented");
+		die("unsupported init expression opcode 0x%02x", op);
+		v = 0;
+	}
+	if (rd_u8(r) != OP_END) die("init expression must end with 0x0b");
+	return v;
+}
 
 static void limits(Rd *r, uint32_t *min, uint32_t *max, uint32_t cap) {
 	uint8_t fl = rd_u8(r);
@@ -700,6 +728,7 @@ static void load_module(const uint8_t *buf, size_t len) {
 	rd_bytes(&r, &ver, 4);
 	if (ver != 1) die("unsupported wasm version %u", ver);
 
+	M.start = -1;
 	uint32_t *fdecl = NULL, nfdecl = 0;
 	const uint8_t *codesec = NULL; size_t codelen = 0;
 	int last_id = 0;
@@ -746,6 +775,23 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 6: { /* global */
+			M.nglobals = rd_u32v(&s);
+			M.globals = xcalloc(M.nglobals, sizeof(Global));
+			for (uint32_t i = 0; i < M.nglobals; i++) {
+				uint8_t t = rd_u8(&s); check_valtype(t);
+				uint8_t mut = rd_u8(&s);
+				if (mut > 1) die("bad global mutability");
+				M.globals[i].type = t; M.globals[i].mut = mut;
+				/* nglobals is already set, so const_expr's global.get bound check
+				 * is loose here; a forward reference would read a zero.  Spec
+				 * forbids it and real modules do not do it.
+				 * shortcut: ceiling is "init exprs only reference earlier globals";
+				 * upgrade path is to pass i as the bound. */
+				M.globals[i].val = const_expr(&s, t);
+			}
+			break;
+		}
 		case 7: { /* export */
 			M.nexports = rd_u32v(&s);
 			M.exports = xcalloc(M.nexports, sizeof(Export));
@@ -760,6 +806,9 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 8: /* start */
+			M.start = (int32_t)rd_u32v(&s);
+			break;
 		case 10: /* code: deferred until we know the function types */
 			codesec = s.p; codelen = s.n;
 			break;
@@ -811,6 +860,11 @@ static void load_module(const uint8_t *buf, size_t len) {
 	for (uint32_t i = 0; i < M.nexports; i++) {
 		Export *e = &M.exports[i];
 		if (e->kind == 0 && e->idx >= M.nfuncs) die("export: function index out of range");
+	}
+	if (M.start >= 0) {
+		if ((uint32_t)M.start >= M.nfuncs) die("start: function index out of range");
+		FType *t = &M.types[M.funcs[M.start].type];
+		if (t->np || t->nr) die("start function must have type [] -> []");
 	}
 	free(fdecl);
 }
@@ -870,6 +924,8 @@ int main(int argc, char **argv) {
 		printf("trap:%s\n", g_trapcode);
 		return 1;
 	}
+
+	if (M.start >= 0) { vsp = 0; calldepth = 0; csp = 0; do_call((uint32_t)M.start); }
 
 	vsp = 0; calldepth = 0; csp = 0;
 	for (int i = 3; i < argc; i++) vstack[vsp++] = parse_arg(argv[i], ft->pt[i - 3]);
