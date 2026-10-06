@@ -503,10 +503,57 @@ static void exec(uint32_t fidx, uint32_t base) {
 		switch (op) {
 		case OP_NOP: break;
 
+		case OP_BLOCK: case OP_LOOP: {
+			uint32_t spc = pc - 1;
+			uint8_t bt = c[pc++];
+			uint32_t ar = (bt == 0x40) ? 0 : 1;
+			uint32_t e = f->endpc[spc];
+			cstack[csp++] = (RCtrl){ e, (op == OP_LOOP) ? pc : e + 1, vsp,
+			                         (uint8_t)(op == OP_LOOP ? 0 : ar), (uint8_t)(op == OP_LOOP) };
+			break;
+		}
+		case OP_IF: {
+			uint32_t spc = pc - 1;
+			uint8_t bt = c[pc++];
+			uint32_t ar = (bt == 0x40) ? 0 : 1;
+			uint32_t e = f->endpc[spc], el = f->elsepc[spc];
+			uint32_t cond = P32();
+			cstack[csp++] = (RCtrl){ e, e + 1, vsp, (uint8_t)ar, 0 };
+			if (!cond) pc = el ? el + 1 : e;
+			break;
+		}
+		case OP_ELSE:
+			/* Reached only by falling off the end of the then-branch. */
+			pc = cstack[csp-1].pc_end;
+			break;
 		case OP_END:
-			/* No blocks yet, so the only `end` is the function's own. */
-			RET();
+			if (csp == cbase + 1) RET();
+			csp--;
+			break;
 
+		/* Taking a branch to label depth d: unwind d+1 label frames, keeping the
+		 * d-th label's result values.  A loop label is special -- branching to it
+		 * means "iterate", so the frame stays and we jump back to the body. */
+#define BRANCH(d) do { \
+			uint32_t ti_ = csp - 1 - (d); \
+			RCtrl *fr_ = &cstack[ti_]; \
+			if (fr_->is_loop) { csp = ti_ + 1; vsp = fr_->vsp; pc = fr_->pc_target; } \
+			else { \
+				for (uint32_t k_ = 0; k_ < fr_->arity; k_++) \
+					vstack[fr_->vsp + k_] = vstack[vsp - fr_->arity + k_]; \
+				vsp = fr_->vsp + fr_->arity; \
+				csp = ti_; \
+				if (ti_ == cbase) RET(); \
+				pc = fr_->pc_target; \
+			} \
+		} while (0)
+
+		case OP_BR: case OP_BR_IF: {
+			uint32_t d = uleb(c, &pc);
+			if (op == OP_BR_IF && !P32()) break;
+			BRANCH(d);
+			break;
+		}
 		case OP_RETURN: RET();
 
 
@@ -618,6 +665,7 @@ static void exec(uint32_t fidx, uint32_t base) {
 #undef P32
 #undef P64
 #undef RET
+#undef BRANCH
 }
 
 /* ============================================================== decoding */
