@@ -520,7 +520,31 @@ static void exec(uint32_t fidx, uint32_t base) {
 			/* Opcodes with no dedicated case above are dispatched numerically. */
 			switch (op) {
 
+			/* ------------------------------------------------ i32 compare */
+			case 0x45: { uint32_t a = P32(); PUSH((uint32_t)(a == 0)); break; }
+			case 0x46: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a == b2)); break; }
+			case 0x47: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a != b2)); break; }
+			case 0x48: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32(); PUSH((uint32_t)(a < b2)); break; }
+			case 0x49: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a < b2)); break; }
+			case 0x4a: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32(); PUSH((uint32_t)(a > b2)); break; }
+			case 0x4b: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a > b2)); break; }
+			case 0x4c: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32(); PUSH((uint32_t)(a <= b2)); break; }
+			case 0x4d: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a <= b2)); break; }
+			case 0x4e: { int32_t b2 = (int32_t)P32(), a = (int32_t)P32(); PUSH((uint32_t)(a >= b2)); break; }
+			case 0x4f: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a >= b2)); break; }
 
+			/* ------------------------------------------------ i64 compare */
+			case 0x50: { uint64_t a = P64(); PUSH((uint32_t)(a == 0)); break; }
+			case 0x51: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a == b2)); break; }
+			case 0x52: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a != b2)); break; }
+			case 0x53: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64(); PUSH((uint32_t)(a < b2)); break; }
+			case 0x54: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a < b2)); break; }
+			case 0x55: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64(); PUSH((uint32_t)(a > b2)); break; }
+			case 0x56: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a > b2)); break; }
+			case 0x57: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64(); PUSH((uint32_t)(a <= b2)); break; }
+			case 0x58: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a <= b2)); break; }
+			case 0x59: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64(); PUSH((uint32_t)(a >= b2)); break; }
+			case 0x5a: { uint64_t b2 = P64(), a = P64(); PUSH((uint32_t)(a >= b2)); break; }
 
 			/* ------------------------------------------------ i32 arith */
 			case 0x67: { uint32_t a = P32(); PUSH(clz32(a)); break; }
