@@ -428,6 +428,13 @@ static uint32_t csp;
 static uint32_t calldepth;
 
 
+/* Shift counts are masked, not saturated: the spec defines i32 shifts modulo 32
+ * and i64 shifts modulo 64.  In C, shifting by >= the width is undefined
+ * behaviour, so the mask is both a correctness and a safety requirement.  This
+ * is the single most common place a hand-written interpreter disagrees with the
+ * spec, which is why the fixtures hammer it. */
+static uint32_t rotl32(uint32_t a, uint32_t k) { k &= 31; return k ? (a << k) | (a >> (32 - k)) : a; }
+static uint32_t rotr32(uint32_t a, uint32_t k) { k &= 31; return k ? (a >> k) | (a << (32 - k)) : a; }
 
 
 /* Immediate decoders for the hot loop.  No bounds checks here on purpose: the
@@ -529,6 +536,14 @@ static void exec(uint32_t fidx, uint32_t base) {
 				/* INT32_MIN % -1 is 0 by the spec, but UB in C; special-case it. */
 				PUSH(b2 == -1 ? 0u : (uint32_t)(a % b2)); break; }
 			case 0x70: { uint32_t b2 = P32(), a = P32(); if (!b2) trap("div0"); PUSH(a % b2); break; }
+			case 0x71: { uint32_t b2 = P32(), a = P32(); PUSH(a & b2); break; }
+			case 0x72: { uint32_t b2 = P32(), a = P32(); PUSH(a | b2); break; }
+			case 0x73: { uint32_t b2 = P32(), a = P32(); PUSH(a ^ b2); break; }
+			case 0x74: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a << (b2 & 31))); break; }
+			case 0x75: { uint32_t b2 = P32(); int32_t a = (int32_t)P32(); PUSH((uint32_t)(a >> (b2 & 31))); break; }
+			case 0x76: { uint32_t b2 = P32(), a = P32(); PUSH(a >> (b2 & 31)); break; }
+			case 0x77: { uint32_t b2 = P32(), a = P32(); PUSH(rotl32(a, b2)); break; }
+			case 0x78: { uint32_t b2 = P32(), a = P32(); PUSH(rotr32(a, b2)); break; }
 
 
 
