@@ -435,9 +435,13 @@ static uint32_t calldepth;
  * spec, which is why the fixtures hammer it. */
 static uint32_t rotl32(uint32_t a, uint32_t k) { k &= 31; return k ? (a << k) | (a >> (32 - k)) : a; }
 static uint32_t rotr32(uint32_t a, uint32_t k) { k &= 31; return k ? (a >> k) | (a << (32 - k)) : a; }
+static uint64_t rotl64(uint64_t a, uint64_t k) { k &= 63; return k ? (a << k) | (a >> (64 - k)) : a; }
+static uint64_t rotr64(uint64_t a, uint64_t k) { k &= 63; return k ? (a >> k) | (a << (64 - k)) : a; }
 
 static uint32_t clz32(uint32_t v) { return v ? (uint32_t)__builtin_clz(v) : 32; }
 static uint32_t ctz32(uint32_t v) { return v ? (uint32_t)__builtin_ctz(v) : 32; }
+static uint32_t clz64(uint64_t v) { return v ? (uint32_t)__builtin_clzll(v) : 64; }
+static uint32_t ctz64(uint64_t v) { return v ? (uint32_t)__builtin_ctzll(v) : 64; }
 
 /* Immediate decoders for the hot loop.  No bounds checks here on purpose: the
  * body was fully walked by prepare()/resolve_jumps() before we ever run it, so
@@ -574,7 +578,35 @@ static void exec(uint32_t fidx, uint32_t base) {
 			case 0x77: { uint32_t b2 = P32(), a = P32(); PUSH(rotl32(a, b2)); break; }
 			case 0x78: { uint32_t b2 = P32(), a = P32(); PUSH(rotr32(a, b2)); break; }
 
+			/* ------------------------------------------------ i64 arith */
+			case 0x79: { uint64_t a = P64(); PUSH((uint64_t)clz64(a)); break; }
+			case 0x7a: { uint64_t a = P64(); PUSH((uint64_t)ctz64(a)); break; }
+			case 0x7b: { uint64_t a = P64(); PUSH((uint64_t)__builtin_popcountll(a)); break; }
+			case 0x7c: { uint64_t b2 = P64(), a = P64(); PUSH(a + b2); break; }
+			case 0x7d: { uint64_t b2 = P64(), a = P64(); PUSH(a - b2); break; }
+			case 0x7e: { uint64_t b2 = P64(), a = P64(); PUSH(a * b2); break; }
+			case 0x7f: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64();
+				if (b2 == 0) trap("div0");
+				if (a == INT64_MIN && b2 == -1) trap("int-overflow");
+				PUSH((uint64_t)(a / b2)); break; }
+			case 0x80: { uint64_t b2 = P64(), a = P64(); if (!b2) trap("div0"); PUSH(a / b2); break; }
+			case 0x81: { int64_t b2 = (int64_t)P64(), a = (int64_t)P64();
+				if (b2 == 0) trap("div0");
+				PUSH(b2 == -1 ? (uint64_t)0 : (uint64_t)(a % b2)); break; }
+			case 0x82: { uint64_t b2 = P64(), a = P64(); if (!b2) trap("div0"); PUSH(a % b2); break; }
+			case 0x83: { uint64_t b2 = P64(), a = P64(); PUSH(a & b2); break; }
+			case 0x84: { uint64_t b2 = P64(), a = P64(); PUSH(a | b2); break; }
+			case 0x85: { uint64_t b2 = P64(), a = P64(); PUSH(a ^ b2); break; }
+			case 0x86: { uint64_t b2 = P64(), a = P64(); PUSH(a << (b2 & 63)); break; }
+			case 0x87: { uint64_t b2 = P64(); int64_t a = (int64_t)P64(); PUSH((uint64_t)(a >> (b2 & 63))); break; }
+			case 0x88: { uint64_t b2 = P64(), a = P64(); PUSH(a >> (b2 & 63)); break; }
+			case 0x89: { uint64_t b2 = P64(), a = P64(); PUSH(rotl64(a, b2)); break; }
+			case 0x8a: { uint64_t b2 = P64(), a = P64(); PUSH(rotr64(a, b2)); break; }
 
+			/* ------------------------------------------------ conversions */
+			case OP_I32_WRAP:  { uint64_t a = P64(); PUSH((uint32_t)a); break; }
+			case OP_I64_EXT_S: { uint32_t a = P32(); PUSH((uint64_t)(int64_t)(int32_t)a); break; }
+			case OP_I64_EXT_U: { uint32_t a = P32(); PUSH((uint64_t)a); break; }
 
 			default: die("internal: unhandled opcode 0x%02x", op);
 			}
