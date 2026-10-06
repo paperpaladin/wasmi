@@ -248,10 +248,9 @@ static void prepare(Func *f) {
 			cur = fr.h + fr.arity;
 			dead = fr.dead;
 			if (cur > maxh) maxh = cur;
-			if (csp == 0) {
-				if (r.i != r.n) die("instructions after function end");
-				break;
-			}
+			/* csp == 0 means that was the function's own terminating `end`;
+			 * cs[csp-1] below would be out of bounds, so leave now. */
+			if (csp == 0 && r.i != r.n) die("instructions after function end");
 			continue;
 		}
 
