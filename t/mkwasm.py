@@ -263,9 +263,230 @@ class Mod:
         return bytes(b)
 
 
-# The expectation half of the oracle -- an independent Python implementation of
-# the arithmetic -- and the fixtures themselves come next.  Right now this file
-# can only turn text into .wasm; it has no opinion about what the result means.
+# =================================================================== Python ref
+# The independent half of the oracle.  Everything below is plain Python integer
+# arithmetic with the wrapping written out explicitly -- no reuse of anything
+# from wasmi.c, not even its structure.
+
+MASK32 = (1 << 32) - 1
+MASK64 = (1 << 64) - 1
+
+
+def u32(x): return x & MASK32
+def u64(x): return x & MASK64
+def s32(x): x = u32(x); return x - (1 << 32) if x >> 31 else x
+def s64(x): x = u64(x); return x - (1 << 64) if x >> 63 else x
+
+
+class Trap:
+    def __init__(self, code): self.code = code
+    def __str__(self): return "trap:" + self.code
+
+
+def tdiv(a, b):
+    """Truncating division.  Python's // floors, which disagrees with wasm (and
+    with C) for mixed signs: -7 // 2 == -4, but i32.div_s(-7,2) == -3."""
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def trem(a, b):
+    """Remainder with the sign of the dividend, matching truncating division."""
+    r = abs(a) % abs(b)
+    return -r if a < 0 else r
+
+
+def make_int_ref(bits):
+    M = (1 << bits) - 1
+    MIN = -(1 << (bits - 1))
+    us = u32 if bits == 32 else u64
+    ss = s32 if bits == 32 else s64
+
+    def div_s(a, b):
+        a, b = ss(a), ss(b)
+        if b == 0: return Trap("div0")
+        if a == MIN and b == -1: return Trap("int-overflow")
+        return ss(tdiv(a, b))
+
+    def rem_s(a, b):
+        a, b = ss(a), ss(b)
+        if b == 0: return Trap("div0")
+        return ss(trem(a, b))
+
+    def div_u(a, b):
+        a, b = us(a), us(b)
+        if b == 0: return Trap("div0")
+        return ss(a // b)
+
+    def rem_u(a, b):
+        a, b = us(a), us(b)
+        if b == 0: return Trap("div0")
+        return ss(a % b)
+
+    def shl(a, b): return ss(us(a) << (us(b) % bits))
+    def shr_u(a, b): return ss(us(a) >> (us(b) % bits))
+    def shr_s(a, b): return ss(ss(a) >> (us(b) % bits))   # Python >> is arithmetic
+
+    def rotl(a, b):
+        k = us(b) % bits
+        v = us(a)
+        return ss(((v << k) | (v >> (bits - k))) & M) if k else ss(v)
+
+    def rotr(a, b):
+        k = us(b) % bits
+        v = us(a)
+        return ss(((v >> k) | (v << (bits - k))) & M) if k else ss(v)
+
+    def clz(a):
+        v = us(a)
+        n = 0
+        while n < bits and not (v & (1 << (bits - 1 - n))):
+            n += 1
+        return n
+
+    def ctz(a):
+        v = us(a)
+        if v == 0: return bits
+        n = 0
+        while not (v >> n) & 1:
+            n += 1
+        return n
+
+    def popcnt(a): return bin(us(a)).count("1")
+
+    return {
+        "add": lambda a, b: ss(us(a) + us(b)),
+        "sub": lambda a, b: ss(us(a) - us(b)),
+        "mul": lambda a, b: ss(us(a) * us(b)),
+        "div_s": div_s, "div_u": div_u, "rem_s": rem_s, "rem_u": rem_u,
+        "and": lambda a, b: ss(us(a) & us(b)),
+        "or": lambda a, b: ss(us(a) | us(b)),
+        "xor": lambda a, b: ss(us(a) ^ us(b)),
+        "shl": shl, "shr_s": shr_s, "shr_u": shr_u, "rotl": rotl, "rotr": rotr,
+        # Comparisons return i32 0/1 regardless of operand width.
+        "eq": lambda a, b: int(us(a) == us(b)),
+        "ne": lambda a, b: int(us(a) != us(b)),
+        "lt_s": lambda a, b: int(ss(a) < ss(b)),
+        "lt_u": lambda a, b: int(us(a) < us(b)),
+        "gt_s": lambda a, b: int(ss(a) > ss(b)),
+        "gt_u": lambda a, b: int(us(a) > us(b)),
+        "le_s": lambda a, b: int(ss(a) <= ss(b)),
+        "le_u": lambda a, b: int(us(a) <= us(b)),
+        "ge_s": lambda a, b: int(ss(a) >= ss(b)),
+        "ge_u": lambda a, b: int(us(a) >= us(b)),
+        "clz": clz, "ctz": ctz, "popcnt": popcnt,
+        "eqz": lambda a: int(us(a) == 0),
+    }
+
+
+R32 = make_int_ref(32)
+R64 = make_int_ref(64)
+
+BIN_OPS = ["add", "sub", "mul", "div_s", "div_u", "rem_s", "rem_u",
+           "and", "or", "xor", "shl", "shr_s", "shr_u", "rotl", "rotr",
+           "eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u", "le_s", "le_u", "ge_s", "ge_u"]
+UN_OPS = ["clz", "ctz", "popcnt", "eqz"]
+
+# Operand matrices.  Chosen for the corners that break naive implementations:
+# sign boundaries, shift counts at and past the bit width, and 0.
+# Every binary op is run over the full cross product, so the matrices are kept
+# small enough that `make test` stays in the tens of seconds while still hitting
+# every corner: sign boundaries, shift counts at/past the width, and zero.
+V32 = [0, 1, -1, 2, -2, 7, -7, 0x7FFFFFFF, -0x80000000, 0x55555555,
+       31, 32, 33, -31, 65535, 123456789]
+V64 = [0, 1, -1, 2, -2, 7, -7, 0x7FFFFFFFFFFFFFFF, -0x8000000000000000,
+       0x0123456789ABCDEF, 63, 64, 65, 0x100000000]
+
+# ===================================================================== fixtures
+SUITES = []
+
+
+def suite(fn):
+    SUITES.append(fn)
+    return fn
+
+
+def emit(fname, mod, cases):
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, fname + ".wasm"), "wb") as f:
+        f.write(mod.build() if isinstance(mod, Mod) else mod)
+    lines = []
+    for exp, func, args in cases:
+        lines.append("%s %s%s" % (exp, func, "".join(" " + str(a) for a in args)))
+    with open(os.path.join(OUT, fname + ".cases"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return len(cases)
+
+
+def expect(v):
+    """Render a Python reference result as the exact line wasmi should print."""
+    return str(v) if not isinstance(v, Trap) else str(v)
+
+
+# ------------------------------------------------------------------- integer ops
+def int_suite(fname, ty, ref, values):
+    m = Mod()
+    for op in BIN_OPS:
+        res = "i32" if op in ("eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u",
+                              "le_s", "le_u", "ge_s", "ge_u") else ty
+        m.func("%s.%s" % (ty, op), [ty, ty], [res],
+               "local.get 0\nlocal.get 1\n%s.%s\nend" % (ty, op))
+    for op in UN_OPS:
+        res = "i32" if op == "eqz" else ty
+        m.func("%s.%s" % (ty, op), [ty], [res],
+               "local.get 0\n%s.%s\nend" % (ty, op))
+
+    cases = []
+    for op in BIN_OPS:
+        f = ref[op]
+        for a in values:
+            for b in values:
+                cases.append((expect(f(a, b)), "%s.%s" % (ty, op), [a, b]))
+    for op in UN_OPS:
+        f = ref[op]
+        for a in values:
+            cases.append((expect(f(a)), "%s.%s" % (ty, op), [a]))
+    return emit(fname, m, cases)
+
+
+@suite
+def s_i32():
+    return int_suite("i32ops", "i32", R32, V32)
+
+
+@suite
+def s_i64():
+    return int_suite("i64ops", "i64", R64, V64)
+
+
+@suite
+def s_conv():
+    """Width conversions: wrap, and the two extends.  extend_i32_u must NOT
+    sign-extend, which is the bug this catches."""
+    m = Mod()
+    m.func("wrap", ["i64"], ["i32"], "local.get 0\ni32.wrap_i64\nend")
+    m.func("ext_s", ["i32"], ["i64"], "local.get 0\ni64.extend_i32_s\nend")
+    m.func("ext_u", ["i32"], ["i64"], "local.get 0\ni64.extend_i32_u\nend")
+    cases = []
+    for v in V64:
+        cases.append((str(s32(v)), "wrap", [v]))
+    for v in V32:
+        cases.append((str(s64(s32(v))), "ext_s", [v]))
+        cases.append((str(s64(u32(v))), "ext_u", [v]))
+    return emit("conv", m, cases)
+
+
+# ------------------------------------------------------------------ control flow
+# ========================================================================= main
+def main():
+    total = 0
+    files = 0
+    for fn in SUITES:
+        total += fn()
+        files += 1
+    print("mkwasm: %d fixtures, %d cases" % (len(os.listdir(OUT)) // 2, total))
+    return 0
+
 
 if __name__ == "__main__":
-    print("mkwasm: assembler only, no fixtures generated yet")
+    sys.exit(main())
