@@ -427,6 +427,14 @@ static RCtrl *cstack;
 static uint32_t csp;
 static uint32_t calldepth;
 
+static uint64_t mem_size_bytes(void) { return (uint64_t)M.mpages * PAGE_SIZE; }
+
+static void *mem_at(uint64_t addr, uint32_t sz) {
+	/* 64-bit arithmetic on purpose: ea + offset can exceed 2^32 and must not
+	 * wrap into a valid-looking pointer. */
+	if (addr + sz > mem_size_bytes()) trap("oob");
+	return M.mem + addr;
+}
 
 /* Shift counts are masked, not saturated: the spec defines i32 shifts modulo 32
  * and i64 shifts modulo 64.  In C, shifting by >= the width is undefined
@@ -585,7 +593,59 @@ static void exec(uint32_t fidx, uint32_t base) {
 
 		default:
 			/* Opcodes with no dedicated case above are dispatched numerically. */
+			if (op >= OP_LOAD_FIRST && op <= OP_STORE_LAST) {
+				/* Memory access.  Alignment is only a hint; we always memcpy,
+				 * so unaligned accesses are correct (and defined) for free. */
+				(void)uleb(c, &pc);
+				uint32_t off = uleb(c, &pc);
+				if (op <= OP_LOAD_LAST) {
+					uint64_t a = (uint64_t)P32() + off;
+					switch (op) {
+					case 0x28: { uint32_t v; memcpy(&v, mem_at(a,4), 4); PUSH(v); break; }
+					case 0x29: { uint64_t v; memcpy(&v, mem_at(a,8), 8); PUSH(v); break; }
+					case 0x2c: { int8_t v; memcpy(&v, mem_at(a,1), 1); PUSH((uint32_t)(int32_t)v); break; }
+					case 0x2d: { uint8_t v; memcpy(&v, mem_at(a,1), 1); PUSH((uint32_t)v); break; }
+					case 0x2e: { int16_t v; memcpy(&v, mem_at(a,2), 2); PUSH((uint32_t)(int32_t)v); break; }
+					case 0x2f: { uint16_t v; memcpy(&v, mem_at(a,2), 2); PUSH((uint32_t)v); break; }
+					case 0x30: { int8_t v; memcpy(&v, mem_at(a,1), 1); PUSH((uint64_t)(int64_t)v); break; }
+					case 0x31: { uint8_t v; memcpy(&v, mem_at(a,1), 1); PUSH((uint64_t)v); break; }
+					case 0x32: { int16_t v; memcpy(&v, mem_at(a,2), 2); PUSH((uint64_t)(int64_t)v); break; }
+					case 0x33: { uint16_t v; memcpy(&v, mem_at(a,2), 2); PUSH((uint64_t)v); break; }
+					case 0x34: { int32_t v; memcpy(&v, mem_at(a,4), 4); PUSH((uint64_t)(int64_t)v); break; }
+					case 0x35: { uint32_t v; memcpy(&v, mem_at(a,4), 4); PUSH((uint64_t)v); break; }
+					default: die("internal: load 0x%02x", op);
+					}
+				} else {
+					uint64_t val = POP();
+					uint64_t a = (uint64_t)P32() + off;
+					switch (op) {
+					case 0x36: { uint32_t v = (uint32_t)val; memcpy(mem_at(a,4), &v, 4); break; }
+					case 0x37: { uint64_t v = val;           memcpy(mem_at(a,8), &v, 8); break; }
+					case 0x3a: { uint8_t  v = (uint8_t)val;  memcpy(mem_at(a,1), &v, 1); break; }
+					case 0x3b: { uint16_t v = (uint16_t)val; memcpy(mem_at(a,2), &v, 2); break; }
+					case 0x3c: { uint8_t  v = (uint8_t)val;  memcpy(mem_at(a,1), &v, 1); break; }
+					case 0x3d: { uint16_t v = (uint16_t)val; memcpy(mem_at(a,2), &v, 2); break; }
+					case 0x3e: { uint32_t v = (uint32_t)val; memcpy(mem_at(a,4), &v, 4); break; }
+					default: die("internal: store 0x%02x", op);
+					}
+				}
+				break;
+			}
 			switch (op) {
+			case OP_MEM_SIZE: pc++; { uint32_t p = M.mpages; PUSH(p); } break;
+			case OP_MEM_GROW: {
+				pc++;
+				uint32_t d = P32();
+				uint32_t old = M.mpages;
+				uint64_t want = (uint64_t)old + d;
+				if (want > M.mmaxpages || want > MAX_PAGES) { PUSH((uint32_t)-1); break; }
+				uint8_t *nm = realloc(M.mem, (size_t)want * PAGE_SIZE + 1);
+				if (!nm) { PUSH((uint32_t)-1); break; }
+				memset(nm + (size_t)old * PAGE_SIZE, 0, (size_t)(want - old) * PAGE_SIZE);
+				M.mem = nm; M.mpages = (uint32_t)want;
+				PUSH(old);
+				break;
+			}
 
 			/* ------------------------------------------------ i32 compare */
 			case 0x45: { uint32_t a = P32(); PUSH((uint32_t)(a == 0)); break; }
@@ -775,6 +835,17 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 5: { /* memory */
+			uint32_t n = rd_u32v(&s);
+			if (n > 1) die("at most one memory in MVP");
+			if (n) {
+				uint32_t mn, mx; limits(&s, &mn, &mx, MAX_PAGES);
+				M.mpages = mn; M.mmaxpages = mx; M.has_mem = 1;
+				/* +1 so mem_at() of a zero-page memory still yields a valid pointer. */
+				M.mem = xcalloc((size_t)mn * PAGE_SIZE + 1, 1);
+			}
+			break;
+		}
 		case 6: { /* global */
 			M.nglobals = rd_u32v(&s);
 			M.globals = xcalloc(M.nglobals, sizeof(Global));
@@ -812,6 +883,20 @@ static void load_module(const uint8_t *buf, size_t len) {
 		case 10: /* code: deferred until we know the function types */
 			codesec = s.p; codelen = s.n;
 			break;
+		case 11: { /* data */
+			uint32_t n = rd_u32v(&s);
+			for (uint32_t i = 0; i < n; i++) {
+				uint32_t mi = rd_u32v(&s);
+				if (mi != 0 || !M.has_mem) die("data segment without memory 0");
+				uint32_t off = (uint32_t)const_expr(&s, VT_I32);
+				uint32_t cnt = rd_u32v(&s);
+				if (s.i + cnt > s.n) die("data segment overruns section");
+				if ((uint64_t)off + cnt > mem_size_bytes()) die("data segment out of memory bounds");
+				memcpy(M.mem + off, s.p + s.i, cnt);
+				s.i += cnt;
+			}
+			break;
+		}
 		default: die("unknown section id %u", id);
 		}
 		if (id != 0 && id != 10 && s.i != s.n) die("section %u has %zu trailing bytes", id, s.n - s.i);
