@@ -484,6 +484,11 @@ static void do_call(uint32_t fidx) {
 	vsp = gbase + gt->nr;
 }
 
+static int ftype_eq(const FType *a, const FType *b) {
+	if (a->np != b->np || a->nr != b->nr) return 0;
+	if (a->nr && a->rt != b->rt) return 0;
+	return memcmp(a->pt, b->pt, a->np) == 0;
+}
 
 static void exec(uint32_t fidx, uint32_t base) {
 	Func *f = &M.funcs[fidx];
@@ -578,6 +583,18 @@ static void exec(uint32_t fidx, uint32_t base) {
 		case OP_RETURN: RET();
 
 		case OP_CALL: do_call(uleb(c, &pc)); break;
+		case OP_CALL_INDIRECT: {
+			uint32_t ti = uleb(c, &pc);
+			pc++; /* reserved 0x00 */
+			uint32_t e = P32();
+			if (e >= M.tsize) trap("undefined-element");
+			uint32_t target = M.table[e];
+			if (target == NO_FUNC) trap("uninitialized-element");
+			if (!ftype_eq(&M.types[ti], &M.types[M.funcs[target].type]))
+				trap("indirect-call-type-mismatch");
+			do_call(target);
+			break;
+		}
 
 		case OP_DROP: vsp--; break;
 		case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
@@ -835,6 +852,18 @@ static void load_module(const uint8_t *buf, size_t len) {
 			}
 			break;
 		}
+		case 4: { /* table */
+			uint32_t n = rd_u32v(&s);
+			if (n > 1) die("at most one table in MVP");
+			if (n) {
+				if (rd_u8(&s) != 0x70) die("only funcref tables are supported");
+				uint32_t mn, mx; limits(&s, &mn, &mx, 0xffffffu);
+				M.tsize = mn; M.has_table = 1;
+				M.table = xmalloc(sizeof(uint32_t) * (mn ? mn : 1));
+				for (uint32_t k = 0; k < mn; k++) M.table[k] = NO_FUNC;
+			}
+			break;
+		}
 		case 5: { /* memory */
 			uint32_t n = rd_u32v(&s);
 			if (n > 1) die("at most one memory in MVP");
@@ -880,6 +909,22 @@ static void load_module(const uint8_t *buf, size_t len) {
 		case 8: /* start */
 			M.start = (int32_t)rd_u32v(&s);
 			break;
+		case 9: { /* element */
+			uint32_t n = rd_u32v(&s);
+			for (uint32_t i = 0; i < n; i++) {
+				uint32_t ti = rd_u32v(&s);
+				if (ti != 0 || !M.has_table) die("element segment without table 0");
+				uint32_t off = (uint32_t)const_expr(&s, VT_I32);
+				uint32_t cnt = rd_u32v(&s);
+				if ((uint64_t)off + cnt > M.tsize) die("element segment out of table bounds");
+				for (uint32_t k = 0; k < cnt; k++) {
+					uint32_t fi = rd_u32v(&s);
+					if (fi >= nfdecl) die("element: function index %u out of range", fi);
+					M.table[off + k] = fi;
+				}
+			}
+			break;
+		}
 		case 10: /* code: deferred until we know the function types */
 			codesec = s.p; codelen = s.n;
 			break;
