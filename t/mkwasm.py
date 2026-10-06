@@ -764,6 +764,102 @@ def s_recursion():
 
 
 # ----------------------------------------------------------------- memory
+@suite
+def s_memory():
+    DATA = b"hello, wasm\x00\xff\x80\x7f"
+    m = Mod()
+    m.mem = (1, 2)
+    m.data.append((0, DATA))
+    m.func("ld8u", ["i32"], ["i32"], "local.get 0\ni32.load8_u\nend")
+    m.func("ld8s", ["i32"], ["i32"], "local.get 0\ni32.load8_s\nend")
+    m.func("ld16u", ["i32"], ["i32"], "local.get 0\ni32.load16_u align=0\nend")
+    m.func("ld16s", ["i32"], ["i32"], "local.get 0\ni32.load16_s align=0\nend")
+    m.func("ld32", ["i32"], ["i32"], "local.get 0\ni32.load align=0\nend")
+    m.func("ld64", ["i32"], ["i64"], "local.get 0\ni64.load align=0\nend")
+    m.func("ld32s64", ["i32"], ["i64"], "local.get 0\ni64.load32_s align=0\nend")
+    m.func("ld32u64", ["i32"], ["i64"], "local.get 0\ni64.load32_u align=0\nend")
+    # round-trips: store then load back at the same (possibly unaligned) address
+    m.func("rt32", ["i32", "i32"], ["i32"],
+           "local.get 0\nlocal.get 1\ni32.store align=0\nlocal.get 0\ni32.load align=0\nend")
+    m.func("rt16s", ["i32", "i32"], ["i32"],
+           "local.get 0\nlocal.get 1\ni32.store16 align=0\nlocal.get 0\ni32.load16_s align=0\nend")
+    m.func("rt8s", ["i32", "i32"], ["i32"],
+           "local.get 0\nlocal.get 1\ni32.store8\nlocal.get 0\ni32.load8_s\nend")
+    m.func("rt64", ["i32", "i64"], ["i64"],
+           "local.get 0\nlocal.get 1\ni64.store align=0\nlocal.get 0\ni64.load align=0\nend")
+    # endianness: store a word, read its second byte
+    m.func("byte1", ["i32"], ["i32"],
+           "i32.const 100\nlocal.get 0\ni32.store\ni32.const 100\ni32.load8_u offset=1\nend")
+    # static offset immediate on top of the dynamic address
+    m.func("ldoff", ["i32"], ["i32"], "local.get 0\ni32.load8_u offset=4\nend")
+    m.func("size", [], ["i32"], "memory.size\nend")
+    m.func("grow", ["i32"], ["i32"], "local.get 0\nmemory.grow\nend")
+    m.func("grow_size", ["i32"], ["i32"], "local.get 0\nmemory.grow\ndrop\nmemory.size\nend")
+
+    PAGE = 65536
+    mem = bytearray(PAGE)
+    mem[: len(DATA)] = DATA
+
+    def ld(a, n):
+        if a + n > PAGE:
+            return Trap("oob")
+        return int.from_bytes(mem[a:a + n], "little")
+
+    cases = []
+    for a in [0, 1, 4, 11, 12, 13, 14]:
+        v = ld(a, 1)
+        cases.append((str(v), "ld8u", [a]))
+        cases.append((str(s32(v - 256 if v >> 7 else v)), "ld8s", [a]))
+        cases.append((str(ld(a + 4, 1)), "ldoff", [a]))
+    for a in [0, 1, 3, 11, 13]:
+        v = ld(a, 2)
+        cases.append((str(v), "ld16u", [a]))
+        cases.append((str(s32(v - 65536 if v >> 15 else v)), "ld16s", [a]))
+    for a in [0, 1, 3, 7, 11]:
+        cases.append((str(s32(ld(a, 4))), "ld32", [a]))
+        cases.append((str(s64(ld(a, 8))), "ld64", [a]))
+        cases.append((str(s64(s32(ld(a, 4)))), "ld32s64", [a]))
+        cases.append((str(s64(ld(a, 4))), "ld32u64", [a]))
+    # unaligned round-trips, including right at the page boundary
+    for a in [0, 1, 3, 5, 7, 1000, 65532]:
+        for v in [0, 1, -1, 0x7FFFFFFF, -0x80000000, 0x12345678, -123456]:
+            cases.append((str(s32(v)), "rt32", [a, v]))
+    for a in [0, 1, 2, 3, 65534]:
+        for v in [0, 1, -1, 0x7FFF, -0x8000, 0x1234, 0xFFFF, 0x12345]:
+            x = u32(v) & 0xFFFF
+            cases.append((str(s32(x - 65536 if x >> 15 else x)), "rt16s", [a, v]))
+    for a in [0, 5, 65535]:
+        for v in [0, 1, -1, 127, 128, 255, 256, -128, -129]:
+            x = u32(v) & 0xFF
+            cases.append((str(s32(x - 256 if x >> 7 else x)), "rt8s", [a, v]))
+    for a in [0, 1, 7, 65528]:
+        for v in [0, 1, -1, 0x7FFFFFFFFFFFFFFF, -0x8000000000000000, 0x0123456789ABCDEF]:
+            cases.append((str(s64(v)), "rt64", [a, v]))
+    for v in [0, 0x1234, 0xFF00, -1, 0x12345678]:
+        cases.append((str((u32(v) >> 8) & 0xFF), "byte1", [v]))
+    # out-of-bounds accesses: each must be a clean trap
+    cases += [
+        ("trap:oob", "ld32", [65533]),
+        ("trap:oob", "ld32", [65534]),
+        ("trap:oob", "ld32", [65536]),
+        ("trap:oob", "ld32", [-1]),            # 0xffffffff, must not wrap to 0
+        ("trap:oob", "ld64", [65529]),
+        ("trap:oob", "ld8u", [65536]),
+        ("trap:oob", "ldoff", [65533]),        # dynamic 65533 + static 4
+        ("trap:oob", "rt32", [65533, 1]),
+        ("trap:oob", "rt8s", [65536, 1]),
+        ("trap:oob", "rt64", [65529, 1]),
+        ("0", "ld8u", [65535]),                # last valid byte, still in range
+        ("0", "ld32", [65532]),                # last valid word, still in range
+    ]
+    cases += [("1", "size", []), ("1", "grow", [0]), ("1", "grow", [1]),
+              ("-1", "grow", [2]), ("-1", "grow", [65536]),
+              ("1", "grow_size", [0]), ("2", "grow_size", [1]),
+              ("1", "grow_size", [5])]
+    return emit("memory", m, cases)
+
+
+# -------------------------------------------------------------- call_indirect
 # ========================================================================= main
 def main():
     total = 0
