@@ -1,0 +1,84 @@
+v15.c: In function 'prepare':
+v15.c:307:31: error: 'vsp' undeclared (first use in this function); did you mean 'csp'?
+  307 |                 case OP_DROP: vsp--; break;
+      |                               ^~~
+      |                               csp
+v15.c:307:31: note: each undeclared identifier is reported only once for each function it appears in
+v15.c:308:51: error: implicit declaration of function 'P32' [-Wimplicit-function-declaration]
+  308 |                 case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
+      |                                                   ^~~
+v15.c:308:72: error: implicit declaration of function 'POP' [-Wimplicit-function-declaration]
+  308 |                 case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
+      |                                                                        ^~~
+v15.c:308:91: error: implicit declaration of function 'PUSH' [-Wimplicit-function-declaration]
+  308 |                 case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
+      |                                                                                           ^~~~
+v15.c:310:52: error: implicit declaration of function 'uleb' [-Wimplicit-function-declaration]
+  310 |                 case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
+      |                                                    ^~~~
+v15.c:310:57: error: 'c' undeclared (first use in this function)
+  310 |                 case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
+      |                                                         ^
+v15.c:310:71: error: 'vstack' undeclared (first use in this function)
+  310 |                 case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
+      |                                                                       ^~~~~~
+v15.c:310:78: error: 'base' undeclared (first use in this function)
+  310 |                 case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
+      |                                                                              ^~~~
+v15.c:316:50: error: implicit declaration of function 'sleb' [-Wimplicit-function-declaration]
+  316 |                 case OP_I32_CONST: { int64_t v = sleb(c, &pc); PUSH((uint32_t)(int32_t)v); break; }
+      |                                                  ^~~~
+v15.c:335:51: error: implicit declaration of function 'P64' [-Wimplicit-function-declaration]
+  335 |                         case 0x50: { uint64_t a = P64(); PUSH((uint32_t)(a == 0)); break; }
+      |                                                   ^~~
+v15.c:348:63: error: implicit declaration of function 'clz32' [-Wimplicit-function-declaration]
+  348 |                         case 0x67: { uint32_t a = P32(); PUSH(clz32(a)); break; }
+      |                                                               ^~~~~
+v15.c:349:63: error: implicit declaration of function 'ctz32' [-Wimplicit-function-declaration]
+  349 |                         case 0x68: { uint32_t a = P32(); PUSH(ctz32(a)); break; }
+      |                                                               ^~~~~
+v15.c:372:75: error: implicit declaration of function 'rotl32' [-Wimplicit-function-declaration]
+  372 |                         case 0x77: { uint32_t b2 = P32(), a = P32(); PUSH(rotl32(a, b2)); break; }
+      |                                                                           ^~~~~~
+v15.c:373:75: error: implicit declaration of function 'rotr32' [-Wimplicit-function-declaration]
+  373 |                         case 0x78: { uint32_t b2 = P32(), a = P32(); PUSH(rotr32(a, b2)); break; }
+      |                                                                           ^~~~~~
+v15.c:376:73: error: implicit declaration of function 'clz64' [-Wimplicit-function-declaration]
+  376 |                         case 0x79: { uint64_t a = P64(); PUSH((uint64_t)clz64(a)); break; }
+      |                                                                         ^~~~~
+v15.c:377:73: error: implicit declaration of function 'ctz64' [-Wimplicit-function-declaration]
+  377 |                         case 0x7a: { uint64_t a = P64(); PUSH((uint64_t)ctz64(a)); break; }
+      |                                                                         ^~~~~
+v15.c:397:75: error: implicit declaration of function 'rotl64' [-Wimplicit-function-declaration]
+  397 |                         case 0x89: { uint64_t b2 = P64(), a = P64(); PUSH(rotl64(a, b2)); break; }
+      |                                                                           ^~~~~~
+v15.c:398:75: error: implicit declaration of function 'rotr64' [-Wimplicit-function-declaration]
+  398 |                         case 0x8a: { uint64_t b2 = P64(), a = P64(); PUSH(rotr64(a, b2)); break; }
+      |                                                                           ^~~~~~
+v15.c: In function 'load_module':
+v15.c:600:73: error: implicit declaration of function 'resolve_jumps' [-Wimplicit-function-declaration]
+  600 |         for (uint32_t i = 0; i < M.nfuncs; i++) { prepare(&M.funcs[i]); resolve_jumps(&M.funcs[i]); }
+      |                                                                         ^~~~~~~~~~~~~
+v15.c: In function 'main':
+v15.c:662:9: error: 'vstack' undeclared (first use in this function)
+  662 |         vstack = xcalloc(VSTACK_MAX, sizeof(uint64_t));
+      |         ^~~~~~
+v15.c:663:9: error: 'cstack' undeclared (first use in this function)
+  663 |         cstack = xcalloc(CSTACK_MAX, sizeof(RCtrl));
+      |         ^~~~~~
+v15.c:663:45: error: 'RCtrl' undeclared (first use in this function); did you mean 'VCtrl'?
+  663 |         cstack = xcalloc(CSTACK_MAX, sizeof(RCtrl));
+      |                                             ^~~~~
+      |                                             VCtrl
+v15.c:670:29: error: 'vsp' undeclared (first use in this function)
+  670 |         if (M.start >= 0) { vsp = 0; calldepth = 0; csp = 0; do_call((uint32_t)M.start); }
+      |                             ^~~
+v15.c:670:38: error: 'calldepth' undeclared (first use in this function)
+  670 |         if (M.start >= 0) { vsp = 0; calldepth = 0; csp = 0; do_call((uint32_t)M.start); }
+      |                                      ^~~~~~~~~
+v15.c:670:53: error: 'csp' undeclared (first use in this function)
+  670 |         if (M.start >= 0) { vsp = 0; calldepth = 0; csp = 0; do_call((uint32_t)M.start); }
+      |                                                     ^~~
+v15.c:670:62: error: implicit declaration of function 'do_call' [-Wimplicit-function-declaration]
+  670 |         if (M.start >= 0) { vsp = 0; calldepth = 0; csp = 0; do_call((uint32_t)M.start); }
+      |                                                              ^~~~~~~

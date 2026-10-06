@@ -1,0 +1,67 @@
+0 absish 0
+0 clamp10 0
+-7 ret 0
+132 deep 0
+1 absish 1
+1 clamp10 1
+7 ret 1
+2 deep 1
+1 absish -1
+-1 clamp10 -1
+7 ret -1
+0 deep -1
+5 absish 5
+5 clamp10 5
+7 ret 5
+6 deep 5
+5 absish -5
+-5 clamp10 -5
+7 ret -5
+-4 deep -5
+2147483647 absish 2147483647
+10 clamp10 2147483647
+7 ret 2147483647
+-2147483648 deep 2147483647
+-2147483648 absish -2147483648
+-2147483648 clamp10 -2147483648
+7 ret -2147483648
+-2147483647 deep -2147483648
+100 absish 100
+10 clamp10 100
+7 ret 100
+101 deep 100
+100 absish -100
+-100 clamp10 -100
+7 ret -100
+-99 deep -100
+0 sum 0
+1 sum 1
+3 sum 2
+6 sum 3
+55 sum 10
+5050 sum 100
+500500 sum 1000
+0 sum -1
+0 sum -5
+10 sw 0
+20 sw 1
+30 sw 2
+40 sw 3
+40 sw 4
+40 sw 7
+40 sw -1
+40 sw 100
+22 sel 0 11 22
+11 sel 1 11 22
+11 sel -1 11 22
+11 sel 2 11 22
+1024 mulrep 2 10
+243 mulrep 3 5
+-8 mulrep -2 3
+1 mulrep 7 0
+1410065408 mulrep 10 10
+-2187 mulrep -3 7
+-2147483648 mulrep 2 31
+0 mulrep 2 32
+trap:unreachable boom 1
+1 boom 0

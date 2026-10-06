@@ -5,3 +5,4 @@ core
 core.*
 vgcore.*
 t/fix/
+t/__pycache__/
