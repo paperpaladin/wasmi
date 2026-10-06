@@ -501,6 +501,7 @@ static void exec(uint32_t fidx, uint32_t base) {
 	for (;;) {
 		uint8_t op = c[pc++];
 		switch (op) {
+		case OP_UNREACHABLE: trap("unreachable");
 		case OP_NOP: break;
 
 		case OP_BLOCK: case OP_LOOP: {
@@ -551,6 +552,18 @@ static void exec(uint32_t fidx, uint32_t base) {
 		case OP_BR: case OP_BR_IF: {
 			uint32_t d = uleb(c, &pc);
 			if (op == OP_BR_IF && !P32()) break;
+			BRANCH(d);
+			break;
+		}
+		case OP_BR_TABLE: {
+			uint32_t n = uleb(c, &pc);
+			uint32_t idx = P32(), d = 0;
+			/* n labels followed by the default; the default is taken when the
+			 * index is out of range, which is a branch, not a trap. */
+			for (uint32_t k = 0; k <= n; k++) {
+				uint32_t v = uleb(c, &pc);
+				if (k == idx || (idx >= n && k == n)) d = v;
+			}
 			BRANCH(d);
 			break;
 		}
