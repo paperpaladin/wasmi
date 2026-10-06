@@ -207,14 +207,57 @@ static void load_module(const uint8_t *buf, size_t len) {
 		}
 		switch (id) {
 		case 0: break; /* custom: ignored */
+		case 1: { /* type */
+			M.ntypes = rd_u32v(&s);
+			M.types = xcalloc(M.ntypes, sizeof(FType));
+			for (uint32_t i = 0; i < M.ntypes; i++) {
+				if (rd_u8(&s) != 0x60) die("expected func type (0x60)");
+				FType *t = &M.types[i];
+				t->np = rd_u32v(&s);
+				t->pt = xmalloc(t->np ? t->np : 1);
+				for (uint32_t k = 0; k < t->np; k++) { t->pt[k] = rd_u8(&s); check_valtype(t->pt[k]); }
+				t->nr = rd_u32v(&s);
+				if (t->nr > 1) die("multi-value results are post-MVP");
+				if (t->nr) { t->rt = rd_u8(&s); check_valtype(t->rt); }
+			}
+			break;
+		}
+		case 7: { /* export */
+			M.nexports = rd_u32v(&s);
+			M.exports = xcalloc(M.nexports, sizeof(Export));
+			for (uint32_t i = 0; i < M.nexports; i++) {
+				uint32_t nl = rd_u32v(&s);
+				if (s.i + nl > s.n) die("export name overruns section");
+				M.exports[i].name = (const char *)(s.p + s.i);
+				M.exports[i].nlen = nl;
+				s.i += nl;
+				M.exports[i].kind = rd_u8(&s);
+				M.exports[i].idx = rd_u32v(&s);
+			}
+			break;
+		}
 		default: break;   /* sections we cannot handle yet are skipped */
 		}
 	}
 
 
+	for (uint32_t i = 0; i < M.nexports; i++) {
+		Export *e = &M.exports[i];
+		if (e->kind == 0 && e->idx >= M.nfuncs) die("export: function index out of range");
+	}
 }
 
 /* ================================================================== main */
+static int find_export(const char *name) {
+	size_t l = strlen(name);
+	for (uint32_t i = 0; i < M.nexports; i++)
+		if (M.exports[i].kind == 0 && M.exports[i].nlen == l &&
+		    !memcmp(M.exports[i].name, name, l)) return (int)M.exports[i].idx;
+	/* Also accept a bare function index, which is handy without an export table. */
+	char *end; long v = strtol(name, &end, 10);
+	if (*name && !*end && v >= 0 && v < (long)M.nfuncs) return (int)v;
+	return -1;
+}
 
 
 int main(int argc, char **argv) {
@@ -233,9 +276,14 @@ int main(int argc, char **argv) {
 	fclose(fp);
 
 	load_module(buf, (size_t)sz);
-	/* Section framing is all we understand so far; nothing is runnable. */
-	die("module parsed, but exports are not decoded yet (wanted '%s')", argv[2]);
+
+	int fi = find_export(argv[2]);
+	if (fi < 0) die("no exported function named '%s'", argv[2]);
+	FType *ft = &M.types[M.funcs[fi].type];
+	if ((uint32_t)(argc - 3) != ft->np)
+		die("'%s' takes %u argument(s), %d given", argv[2], ft->np, argc - 3);
+
+	die("execution is not implemented yet ('%s' validates cleanly)", argv[2]);
 	return 2;
 }
-
 
