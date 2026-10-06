@@ -523,9 +523,9 @@ static void exec(uint32_t fidx, uint32_t base) {
 
 
 			/* ------------------------------------------------ i32 arith */
-			case 0x67: PUSH(clz32(P32())); break;
-			case 0x68: PUSH(ctz32(P32())); break;
-			case 0x69: PUSH((uint32_t)__builtin_popcount(P32())); break;
+			case 0x67: { uint32_t a = P32(); PUSH(clz32(a)); break; }
+			case 0x68: { uint32_t a = P32(); PUSH(ctz32(a)); break; }
+			case 0x69: { uint32_t a = P32(); PUSH((uint32_t)__builtin_popcount(a)); break; }
 			case 0x6a: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a + b2)); break; }
 			case 0x6b: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a - b2)); break; }
 			case 0x6c: { uint32_t b2 = P32(), a = P32(); PUSH((uint32_t)(a * b2)); break; }
