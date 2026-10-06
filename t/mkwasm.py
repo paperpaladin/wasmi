@@ -860,6 +860,129 @@ def s_memory():
 
 
 # -------------------------------------------------------------- call_indirect
+@suite
+def s_indirect():
+    m = Mod()
+    m.func("add", ["i32", "i32"], ["i32"], "local.get 0\nlocal.get 1\ni32.add\nend")
+    m.func("sub", ["i32", "i32"], ["i32"], "local.get 0\nlocal.get 1\ni32.sub\nend")
+    m.func("mul", ["i32", "i32"], ["i32"], "local.get 0\nlocal.get 1\ni32.mul\nend")
+    m.func("neg", ["i32"], ["i32"], "i32.const 0\nlocal.get 0\ni32.sub\nend")
+    t_bin = m.ftype(["i32", "i32"], ["i32"])
+    # table slots 0..3 filled; 4 and 5 left uninitialised on purpose
+    m.table = 6
+    m.elems.append((0, [0, 1, 2, 3]))
+    m.func("dispatch", ["i32", "i32", "i32"], ["i32"],
+           "local.get 1\nlocal.get 2\nlocal.get 0\ncall_indirect %d\nend" % t_bin)
+
+    cases = []
+    for a, b in [(3, 4), (-5, 7), (0x7FFFFFFF, 1), (-0x80000000, -1)]:
+        cases.append((str(s32(a + b)), "dispatch", [0, a, b]))
+        cases.append((str(s32(a - b)), "dispatch", [1, a, b]))
+        cases.append((str(s32(a * b)), "dispatch", [2, a, b]))
+        # slot 3 holds `neg`, type [i32]->[i32]: signature mismatch must trap
+        cases.append(("trap:indirect-call-type-mismatch", "dispatch", [3, a, b]))
+        cases.append(("trap:uninitialized-element", "dispatch", [4, a, b]))
+        cases.append(("trap:uninitialized-element", "dispatch", [5, a, b]))
+        cases.append(("trap:undefined-element", "dispatch", [6, a, b]))
+        cases.append(("trap:undefined-element", "dispatch", [-1, a, b]))
+    return emit("indirect", m, cases)
+
+
+# -------------------------------------------------------------------- globals
+@suite
+def s_globals():
+    m = Mod()
+    m.globals.append(("i32", True, asm("i32.const 7") + bytes([0x0B])))
+    m.globals.append(("i64", False, asm("i64.const -1000000000000") + bytes([0x0B])))
+    m.globals.append(("i32", True, asm("i32.const 0") + bytes([0x0B])))
+    m.func("get0", [], ["i32"], "global.get 0\nend")
+    m.func("get1", [], ["i64"], "global.get 1\nend")
+    m.func("bump", ["i32"], ["i32"],
+           "global.get 0\nlocal.get 0\ni32.add\nglobal.set 0\nglobal.get 0\nend")
+    m.func("started", [], ["i32"], "global.get 2\nend")
+    start = m.func("_start", [], [], "i32.const 42\nglobal.set 2\nend", export=False)
+    m.start = start
+    cases = [("7", "get0", []), ("-1000000000000", "get1", []),
+             ("12", "bump", [5]), ("6", "bump", [-1]),
+             ("42", "started", [])]
+    return emit("globals", m, cases)
+
+
+# ----------------------------------------------------- modules that must be rejected
+@suite
+def s_reject():
+    n = 0
+
+    def rej(fname, blob, note):
+        nonlocal n
+        n += emit(fname, blob, [("!error", "_", [])])
+
+    # f32 in a signature: honest refusal, not a miscompile
+    m = Mod()
+    m.func("f", ["f32"], ["f32"], "local.get 0\nlocal.get 0\nf32.add\nend")
+    rej("rej_f32", m.build(), "float types")
+
+    m = Mod()
+    m.func("f", ["f64"], ["f64"], "local.get 0\nlocal.get 0\nf64.add\nend")
+    rej("rej_f64", m.build(), "float types")
+
+    # structurally broken bodies
+    m = Mod()
+    m.func("f", [], ["i32"], "i32.add\nend")                       # stack underflow
+    rej("rej_underflow", m.build(), "underflow")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "block\ni32.const 1\nend")            # missing end
+    rej("rej_noend", m.build(), "unterminated block")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "i32.const 1\nbr 5\nend")             # label out of range
+    rej("rej_brdepth", m.build(), "branch depth")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "local.get 3\nend")                   # bad local index
+    rej("rej_local", m.build(), "local index")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "i32.const 0\ni32.load\nend")         # memory op, no memory
+    rej("rej_nomem", m.build(), "no memory")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "call 9\nend")                        # bad func index
+    rej("rej_call", m.build(), "call index")
+
+    m = Mod()
+    m.func("f", [], ["i32"], "i32.const 0\nend")
+    good = m.build()
+    rej("rej_magic", b"\x00asx" + good[4:], "bad magic")
+    rej("rej_version", good[:4] + b"\x09\x00\x00\x00" + good[8:], "bad version")
+    rej("rej_truncated", good[: len(good) - 3], "truncated file")
+    rej("rej_empty", b"", "empty file")
+    # A LEB128 that never terminates (or is absurdly padded) must be rejected,
+    # not walked off the end of the buffer.
+    pad = b"\x80" * 12
+    rej("rej_leb", b"\0asm" + (1).to_bytes(4, "little")
+        + bytes([1]) + uleb(len(pad)) + pad, "runaway LEB128")
+    # trailing garbage section id
+    rej("rej_badsec", good + bytes([99]) + uleb(1) + b"\x00", "unknown section")
+
+    # data segment past the end of memory
+    m = Mod()
+    m.mem = (1, None)
+    m.data.append((65530, b"0123456789"))
+    m.func("f", [], ["i32"], "i32.const 0\nend")
+    rej("rej_data_oob", m.build(), "data out of bounds")
+
+    # element segment past the end of the table
+    m = Mod()
+    m.table = 2
+    m.func("f", [], ["i32"], "i32.const 0\nend")
+    m.elems.append((1, [0, 0]))
+    rej("rej_elem_oob", m.build(), "element out of bounds")
+
+    return n
+
+
 # ========================================================================= main
 def main():
     total = 0
