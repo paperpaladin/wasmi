@@ -34,6 +34,11 @@
 #define MAX_PAGES    65536u
 
 /* ------------------------------------------------------------- diagnostics */
+static jmp_buf g_trap;
+static const char *g_trapcode;
+
+static void trap(const char *code) { g_trapcode = code; longjmp(g_trap, 1); }
+
 static void die(const char *fmt, ...) {
 	va_list ap; va_start(ap, fmt);
 	fputs("error: ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr);
@@ -414,12 +419,115 @@ static void resolve_jumps(Func *f) {
 }
 
 /* ============================================================== execution */
+static uint64_t *vstack;
+static uint32_t vsp;
+
+typedef struct { uint32_t pc_end, pc_target, vsp; uint8_t arity, is_loop; } RCtrl;
+static RCtrl *cstack;
+static uint32_t csp;
+static uint32_t calldepth;
 
 
 
 
+/* Immediate decoders for the hot loop.  No bounds checks here on purpose: the
+ * body was fully walked by prepare()/resolve_jumps() before we ever run it, so
+ * every immediate is known to be well-formed and in range.  That is the whole
+ * payoff of validating ahead of execution. */
+static inline uint32_t uleb(const uint8_t *c, uint32_t *pc) {
+	uint32_t v = 0; int s = 0; uint8_t b;
+	do { b = c[(*pc)++]; if (s < 32) v |= (uint32_t)(b & 0x7f) << s; s += 7; } while (b & 0x80);
+	return v;
+}
+static inline int64_t sleb(const uint8_t *c, uint32_t *pc) {
+	uint64_t v = 0; int s = 0; uint8_t b;
+	do { b = c[(*pc)++]; if (s < 64) v |= (uint64_t)(b & 0x7f) << s; s += 7; } while (b & 0x80);
+	if (s < 64 && (b & 0x40)) v |= ~(uint64_t)0 << s;
+	return (int64_t)v;
+}
+
+static void exec(uint32_t fidx, uint32_t base);
+
+static void do_call(uint32_t fidx) {
+	Func *g = &M.funcs[fidx];
+	FType *gt = &M.types[g->type];
+	uint32_t gbase = vsp - gt->np;           /* args are already on top */
+	/* maxstack came from the validation pass, so one check per call replaces a
+	 * check on every push in the hot loop. */
+	if ((uint64_t)gbase + g->nlocals + g->maxstack > VSTACK_MAX) trap("stack-overflow");
+	/* Declared (non-parameter) locals are zero-initialised by the spec. */
+	memset(&vstack[vsp], 0, (size_t)(g->nlocals - gt->np) * sizeof(uint64_t));
+	vsp = gbase + g->nlocals;
+	exec(fidx, gbase);
+	/* exec leaves nr results at vstack[gbase..]; restore vsp accordingly. */
+	vsp = gbase + gt->nr;
+}
 
 
+static void exec(uint32_t fidx, uint32_t base) {
+	Func *f = &M.funcs[fidx];
+	FType *ft = &M.types[f->type];
+	const uint8_t *c = f->code;
+	uint32_t pc = 0;
+	uint32_t cbase = csp;
+
+	calldepth++;
+	if (csp + f->maxctrl > CSTACK_MAX) trap("stack-overflow");
+
+	/* Outermost label: branching to it is a return. */
+	cstack[csp++] = (RCtrl){ f->clen - 1, f->clen, base + f->nlocals, (uint8_t)ft->nr, 0 };
+
+#define PUSH(v) (vstack[vsp++] = (uint64_t)(v))
+#define POP()   (vstack[--vsp])
+#define P32()   ((uint32_t)vstack[--vsp])
+#define P64()   (vstack[--vsp])
+#define RET()   do { uint32_t nr_ = ft->nr; \
+		if (nr_) vstack[base] = vstack[vsp - 1]; \
+		vsp = base + nr_; csp = cbase; calldepth--; return; } while (0)
+
+	for (;;) {
+		uint8_t op = c[pc++];
+		switch (op) {
+		case OP_NOP: break;
+
+		case OP_END:
+			/* No blocks yet, so the only `end` is the function's own. */
+			RET();
+
+		case OP_RETURN: RET();
+
+
+		case OP_DROP: vsp--; break;
+		case OP_SELECT: { uint32_t cond = P32(); uint64_t b2 = POP(), a2 = POP(); PUSH(cond ? a2 : b2); break; }
+
+		case OP_LOCAL_GET:  { uint32_t i = uleb(c, &pc); PUSH(vstack[base + i]); break; }
+		case OP_LOCAL_SET:  { uint32_t i = uleb(c, &pc); vstack[base + i] = POP(); break; }
+		case OP_LOCAL_TEE:  { uint32_t i = uleb(c, &pc); vstack[base + i] = vstack[vsp - 1]; break; }
+
+		case OP_I32_CONST: { int64_t v = sleb(c, &pc); PUSH((uint32_t)(int32_t)v); break; }
+		case OP_I64_CONST: { int64_t v = sleb(c, &pc); PUSH((uint64_t)v); break; }
+
+		default:
+			/* Opcodes with no dedicated case above are dispatched numerically. */
+			switch (op) {
+
+
+
+			/* ------------------------------------------------ i32 arith */
+
+
+
+			default: die("internal: unhandled opcode 0x%02x", op);
+			}
+			break;
+		}
+	}
+#undef PUSH
+#undef POP
+#undef P32
+#undef P64
+#undef RET
+}
 
 /* ============================================================== decoding */
 
@@ -566,6 +674,18 @@ static int find_export(const char *name) {
 	return -1;
 }
 
+static uint64_t parse_arg(const char *s, uint8_t t) {
+	errno = 0;
+	char *end;
+	long long sv = strtoll(s, &end, 0);
+	if (errno == ERANGE || *end) {
+		errno = 0;
+		unsigned long long uv = strtoull(s, &end, 0);
+		if (errno || *end) die("cannot parse argument '%s'", s);
+		return t == VT_I32 ? (uint64_t)(uint32_t)uv : (uint64_t)uv;
+	}
+	return t == VT_I32 ? (uint64_t)(uint32_t)(int32_t)sv : (uint64_t)sv;
+}
 
 int main(int argc, char **argv) {
 	if (argc < 3) {
@@ -590,7 +710,21 @@ int main(int argc, char **argv) {
 	if ((uint32_t)(argc - 3) != ft->np)
 		die("'%s' takes %u argument(s), %d given", argv[2], ft->np, argc - 3);
 
-	die("execution is not implemented yet ('%s' validates cleanly)", argv[2]);
-	return 2;
-}
+	vstack = xcalloc(VSTACK_MAX, sizeof(uint64_t));
+	cstack = xcalloc(CSTACK_MAX, sizeof(RCtrl));
 
+	if (setjmp(g_trap)) {
+		printf("trap:%s\n", g_trapcode);
+		return 1;
+	}
+
+	vsp = 0; calldepth = 0; csp = 0;
+	for (int i = 3; i < argc; i++) vstack[vsp++] = parse_arg(argv[i], ft->pt[i - 3]);
+	do_call((uint32_t)fi);
+
+	if (ft->nr) {
+		if (ft->rt == VT_I32) printf("%" PRId32 "\n", (int32_t)(uint32_t)vstack[0]);
+		else printf("%" PRId64 "\n", (int64_t)vstack[0]);
+	}
+	return 0;
+}
