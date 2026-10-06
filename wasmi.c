@@ -163,8 +163,242 @@ enum {
 };
 
 
+/* ------------------------------------------------- blocktype -> label arity */
+static uint32_t blocktype(Rd *r) {
+	uint8_t b = rd_u8(r);
+	if (b == 0x40) return 0;             /* empty result */
+	check_valtype(b);
+	return 1;
+}
 
+/* ====================================================================
+ * Validation + jump resolution.
+ *
+ * One forward pass per function body.  It does three jobs:
+ *
+ *  1. Structural: match block/loop/if against else/end, and record for each
+ *     block-start pc where its `end` (and `else`) live.  WebAssembly control
+ *     flow is *structured* -- there are no arbitrary jumps, only `br N` to the
+ *     N-th enclosing label -- so a label stack is enough to resolve every branch
+ *     target statically, once, instead of scanning the body at every branch.
+ *
+ *  2. Operand-stack depth.  We track the height symbolically (not the types --
+ *     that is the honest gap, see README).  This has to happen *before*
+ *     execution because the interpreter's hot loop pushes without checking:
+ *     knowing maxstack up front lets us reserve the space once per call and
+ *     makes "stack overflow" impossible rather than merely unlikely.  Without
+ *     it a crafted body of nothing but `i32.const` is a heap overflow.
+ *
+ *  3. Index bounds: every local/global/func/type/label index is checked here,
+ *     so the interpreter can index raw arrays with no per-instruction checks.
+ *
+ * Code after `br`/`return`/`unreachable` is unreachable; the spec validates it
+ * polymorphically.  We approximate that with a `dead` flag: while dead we stop
+ * tracking height (and stop complaining about underflow) but keep tracking
+ * block nesting, because the `end`s still have to match.
+ * ==================================================================== */
+typedef struct { uint32_t h; uint8_t arity, labar, is_if, dead; } VCtrl;
 
+static void prepare(Func *f) {
+	FType *ft = &M.types[f->type];
+	Rd r = { f->code, f->clen, 0 };
+	VCtrl *cs = xmalloc(sizeof(VCtrl) * (CSTACK_MAX + 1));
+	uint32_t csp = 0, cur = 0, maxh = 0, maxc = 1;
+	uint8_t dead = 0;
+
+	f->endpc  = xcalloc(f->clen + 1, sizeof(uint32_t));
+	f->elsepc = xcalloc(f->clen + 1, sizeof(uint32_t));
+
+	/* Implicit outermost label == the function itself; `br` to it returns. */
+	cs[csp++] = (VCtrl){ 0, (uint8_t)ft->nr, (uint8_t)ft->nr, 0, 0 };
+
+	while (r.i < r.n) {
+		uint32_t pc = (uint32_t)r.i;
+		uint8_t op = rd_u8(&r);
+		uint32_t pops = 0, pushes = 0;
+
+		switch (op) {
+		case OP_UNREACHABLE: dead = 1; break;
+		case OP_NOP: break;
+
+		case OP_BLOCK: case OP_LOOP: case OP_IF: {
+			uint32_t ar = blocktype(&r);
+			if (op == OP_IF) pops = 1;
+			if (!dead) {
+				if (cur < pops || cur - pops < cs[csp-1].h) die("stack underflow");
+				cur -= pops;
+			}
+			if (csp >= CSTACK_MAX) die("control stack too deep");
+			cs[csp++] = (VCtrl){ cur, (uint8_t)ar,
+			                     (uint8_t)(op == OP_LOOP ? 0 : ar),
+			                     (uint8_t)(op == OP_IF), dead };
+			if (csp > maxc) maxc = csp;
+			continue;
+		}
+		case OP_ELSE:
+			if (csp < 2 || cs[csp-1].is_if != 1) die("else without a matching if");
+			cs[csp-1].is_if = 2;             /* so a second else is rejected */
+			/* The else-arm starts from the same stack height the if-arm did, and
+			 * inherits the enclosing reachability. */
+			dead = cs[csp-1].dead;
+			cur = cs[csp-1].h;
+			continue;
+		case OP_END: {
+			VCtrl fr = cs[--csp];
+			cur = fr.h + fr.arity;
+			dead = fr.dead;
+			if (cur > maxh) maxh = cur;
+			if (csp == 0) {
+				if (r.i != r.n) die("instructions after function end");
+				break;
+			}
+			continue;
+		}
+
+		case OP_BR: case OP_BR_IF: {
+			uint32_t d = rd_u32v(&r);
+			if (d + 1 > csp) die("branch depth %u out of range", d);
+			uint32_t need = cs[csp-1-d].labar + (op == OP_BR_IF ? 1u : 0u);
+			if (!dead && cur < need) die("stack underflow at branch");
+			if (op == OP_BR_IF) { if (!dead) cur -= 1; }
+			else dead = 1;
+			continue;
+		}
+		case OP_BR_TABLE: {
+			uint32_t n = rd_u32v(&r);
+			for (uint32_t k = 0; k < n; k++) {
+				uint32_t d = rd_u32v(&r);
+				if (d + 1 > csp) die("br_table depth out of range");
+			}
+			uint32_t d = rd_u32v(&r);
+			if (d + 1 > csp) die("br_table default depth out of range");
+			if (!dead && cur < 1u + cs[csp-1-d].labar) die("stack underflow at br_table");
+			dead = 1;
+			continue;
+		}
+		case OP_RETURN: dead = 1; continue;
+
+		case OP_CALL: {
+			uint32_t fi = rd_u32v(&r);
+			if (fi >= M.nfuncs) die("call: function index %u out of range", fi);
+			FType *t = &M.types[M.funcs[fi].type];
+			pops = t->np; pushes = t->nr;
+			break;
+		}
+		case OP_CALL_INDIRECT: {
+			uint32_t ti = rd_u32v(&r);
+			uint8_t res = rd_u8(&r);
+			if (res != 0) die("call_indirect reserved byte must be 0");
+			if (ti >= M.ntypes) die("call_indirect: type index out of range");
+			if (!M.has_table) die("call_indirect without a table");
+			pops = M.types[ti].np + 1; pushes = M.types[ti].nr;
+			break;
+		}
+
+		case OP_DROP: pops = 1; break;
+		case OP_SELECT: pops = 3; pushes = 1; break;
+
+		case OP_LOCAL_GET: case OP_LOCAL_SET: case OP_LOCAL_TEE: {
+			uint32_t li = rd_u32v(&r);
+			if (li >= f->nlocals) die("local index %u out of range", li);
+			if (op == OP_LOCAL_GET) pushes = 1;
+			else if (op == OP_LOCAL_SET) pops = 1;
+			else { pops = 1; pushes = 1; }
+			break;
+		}
+		case OP_GLOBAL_GET: case OP_GLOBAL_SET: {
+			uint32_t gi = rd_u32v(&r);
+			if (gi >= M.nglobals) die("global index %u out of range", gi);
+			if (op == OP_GLOBAL_SET && !M.globals[gi].mut) die("global.set on immutable global");
+			if (op == OP_GLOBAL_GET) pushes = 1; else pops = 1;
+			break;
+		}
+
+		case OP_MEM_SIZE: case OP_MEM_GROW: {
+			if (rd_u8(&r) != 0) die("memory op reserved byte must be 0");
+			if (!M.has_mem) die("memory instruction without a memory");
+			if (op == OP_MEM_SIZE) pushes = 1; else { pops = 1; pushes = 1; }
+			break;
+		}
+		case OP_I32_CONST: rd_s32v(&r); pushes = 1; break;
+		case OP_I64_CONST: rd_s64v(&r); pushes = 1; break;
+
+		default:
+			if (op >= OP_LOAD_FIRST && op <= OP_LOAD_LAST) {
+				rd_u32v(&r); rd_u32v(&r);
+				if (!M.has_mem) die("load without a memory");
+				pops = 1; pushes = 1;
+			} else if (op >= OP_STORE_FIRST && op <= OP_STORE_LAST) {
+				rd_u32v(&r); rd_u32v(&r);
+				if (!M.has_mem) die("store without a memory");
+				pops = 2;
+			} else if (op == 0x45 || op == 0x50 ||                 /* eqz */
+			           (op >= 0x67 && op <= 0x69) ||               /* i32 clz/ctz/popcnt */
+			           (op >= 0x79 && op <= 0x7b) ||               /* i64 clz/ctz/popcnt */
+			           op == OP_I32_WRAP || op == OP_I64_EXT_S || op == OP_I64_EXT_U) {
+				pops = 1; pushes = 1;
+			} else if ((op >= 0x46 && op <= 0x4f) || (op >= 0x51 && op <= 0x5a) ||
+			           (op >= 0x6a && op <= 0x78) || (op >= 0x7c && op <= 0x8a)) {
+				pops = 2; pushes = 1;
+			} else {
+				die("unknown opcode 0x%02x at pc %u", op, pc);
+			}
+			break;
+		}
+
+		if (!dead) {
+			if (cur < pops || cur - pops < cs[csp-1].h) die("stack underflow at opcode 0x%02x", op);
+			cur -= pops; cur += pushes;
+			if (cur > maxh) maxh = cur;
+		}
+	}
+	if (csp != 0) die("unterminated block (missing end)");
+	free(cs);
+	f->maxstack = maxh;
+	f->maxctrl = maxc;
+}
+
+/* Second structural pass: fill endpc/elsepc.  Done separately because the
+ * matching `end` is only known after we have walked past the body, and keeping
+ * it out of prepare() keeps that function readable. */
+static void resolve_jumps(Func *f) {
+	Rd r = { f->code, f->clen, 0 };
+	uint32_t stack[CSTACK_MAX]; uint32_t sp = 0;
+	memset(f->elsepc, 0, (f->clen + 1) * sizeof(uint32_t));
+	while (r.i < r.n) {
+		uint32_t pc = (uint32_t)r.i;
+		uint8_t op = rd_u8(&r);
+		switch (op) {
+		case OP_BLOCK: case OP_LOOP: case OP_IF:
+			rd_u8(&r);
+			if (sp >= CSTACK_MAX) die("control stack too deep");
+			stack[sp++] = pc;
+			break;
+		case OP_ELSE:
+			f->elsepc[stack[sp-1]] = pc;
+			break;
+		case OP_END:
+			if (sp) f->endpc[stack[--sp]] = pc;
+			break;
+		case OP_BR: case OP_BR_IF: case OP_CALL:
+		case OP_LOCAL_GET: case OP_LOCAL_SET: case OP_LOCAL_TEE:
+		case OP_GLOBAL_GET: case OP_GLOBAL_SET:
+			rd_u32v(&r); break;
+		case OP_BR_TABLE: {
+			uint32_t n = rd_u32v(&r);
+			for (uint32_t k = 0; k <= n; k++) rd_u32v(&r);
+			break;
+		}
+		case OP_CALL_INDIRECT: rd_u32v(&r); rd_u8(&r); break;
+		case OP_MEM_SIZE: case OP_MEM_GROW: rd_u8(&r); break;
+		case OP_I32_CONST: rd_s32v(&r); break;
+		case OP_I64_CONST: rd_s64v(&r); break;
+		default:
+			if (op >= OP_LOAD_FIRST && op <= OP_STORE_LAST) { rd_u32v(&r); rd_u32v(&r); }
+			break;
+		}
+	}
+}
 
 /* ============================================================== execution */
 
@@ -291,6 +525,8 @@ static void load_module(const uint8_t *buf, size_t len) {
 		}
 		if (s.i != s.n) die("code section has trailing bytes");
 	}
+
+	for (uint32_t i = 0; i < M.nfuncs; i++) { prepare(&M.funcs[i]); resolve_jumps(&M.funcs[i]); }
 
 	for (uint32_t i = 0; i < M.nexports; i++) {
 		Export *e = &M.exports[i];
