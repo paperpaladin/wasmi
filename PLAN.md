@@ -164,6 +164,21 @@ that would make this project's claims external, and it is **not reached**.
       real pass/fail count per file in the README.
       why: this is the only entry on the oracle list that an outsider has any
       reason to trust; everything this repo currently claims is self-scored.
+      BLOCKED, and checked rather than assumed: there is no `.wast` file
+      anywhere on this machine, and neither `wat2wasm` nor `wasm-tools` is
+      installed, so the corpus cannot be produced locally either. It has to be
+      fetched -- `testsuite/` from the WebAssembly/spec repository -- and this
+      environment has no network. Nothing in the item can start until the files
+      are here.
+      This is a different kind of blocker from the rest of the queue and worth
+      saying so: every other item is blocked on work, and this one is blocked
+      on a download. If you are reading this with a network, the sequence is
+      `git clone https://github.com/WebAssembly/testsuite`, commit the `.wast`
+      files under `t/spec/` so the corpus is pinned and the suite stays
+      reproducible, and only then write the driver. Vendoring rather than
+      cloning at test time matters for the same reason `width_table.h` is
+      committed in vtparse: a suite whose corpus arrives over the network is
+      not a suite.
 - [ ] Full operand *type* validation, not just depth.
       why: the spec suite's `assert_invalid` cases are mostly type errors, so
       the pass rate above cannot move much without this.

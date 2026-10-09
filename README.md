@@ -165,7 +165,13 @@ Does not work -- the honest list:
   integers. Roughly a third of the MVP opcode space is therefore missing.
 - **The spec testsuite is not run.** No external pass rate exists. This is the
   largest honesty gap in the project and the first item of `PLAN.md`'s Milestone
-  1.
+  1. It is blocked on a download rather than on work, and that was checked
+  rather than assumed: there is no `.wast` file anywhere on this machine, and
+  neither `wat2wasm` nor `wasm-tools` is installed, so the corpus cannot be
+  produced locally either. Every other open item here is blocked on effort;
+  this one needs `WebAssembly/testsuite` fetched and committed under `t/spec/`
+  first, so that the corpus is pinned and the suite does not depend on a
+  network at test time.
 - **Operand *types* are not validated, only operand-stack depth.** A module that
   is structurally valid but type-confused -- `i64.add` applied to two i32 values,
   a block whose arms leave different types -- will load and run and produce
