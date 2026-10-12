@@ -18,6 +18,33 @@ WASMI=${WASMI:-./wasmi}
 [ -x "$WASMI" ] || { echo "run.sh: $WASMI not built" >&2; exit 1; }
 [ -d t/fix ] || { echo "run.sh: no fixtures; run t/mkwasm.py first" >&2; exit 1; }
 
+# `[ -d t/fix ]` proves the directory exists, not that anything is in it, and
+# the loop below is over `t/fix/*.cases`. An empty t/fix therefore gave
+# "0 passed, 0 failed" and exit 0 -- a silent pass, and this repo's headline
+# number is the 11,833 cases that would not have run. So count the catalogued
+# cases up front, require that the count is the expected order of magnitude,
+# and afterwards require that every one of them was actually executed.
+#
+# The count is pinned exactly rather than floored. A floor of 11,000 let a
+# truncated .cases file lose 57 cases and still pass, because the catalogue
+# count is read from the same truncated file -- so the floor caught an empty
+# corpus and nothing short of that. 11,833 is the number README.md and
+# INDEX.md both quote, so pinning it is what makes those claims checked.
+# Same convention as cmark's t/sections.expected and xmlc's t/suite.expected:
+# when mkwasm.py deliberately grows the corpus, this number moves with it, in
+# the same commit.
+CASES_EXPECTED=11833
+cases=$(cat t/fix/*.cases 2>/dev/null | grep -cvE '^[[:space:]]*(#|$)')
+if [ "$cases" -ne "$CASES_EXPECTED" ]; then
+	printf 'run.sh: t/fix catalogues %d cases, expected %d.\n' \
+		"$cases" "$CASES_EXPECTED" >&2
+	printf '  if t/mkwasm.py grew the corpus on purpose, update CASES_EXPECTED;\n' >&2
+	printf '  otherwise t/fix is stale or truncated -- re-run t/mkwasm.py\n' >&2
+	exit 1
+fi
+printf '%d cases catalogued across %d modules\n' \
+	"$cases" "$(ls t/fix/*.cases 2>/dev/null | wc -l)"
+
 err=$(mktemp) || exit 1
 trap 'rm -f "$err"' EXIT INT TERM
 
@@ -55,6 +82,16 @@ for cf in t/fix/*.cases; do
 		fi
 	done <"$cf"
 done
+
+# Every catalogued case must have been run. A .cases file that cannot be read,
+# or a `read` that stops early on a malformed line, would otherwise just lower
+# the total silently.
+ran=$((pass + fail))
+if [ "$ran" -ne "$cases" ]; then
+	printf 'run.sh: ran %d cases but t/fix catalogues %d\n' "$ran" "$cases" >&2
+	printf '%d passed, %d failed\n' "$pass" "$fail"
+	exit 1
+fi
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
