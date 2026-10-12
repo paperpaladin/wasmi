@@ -28,6 +28,7 @@ rm -rf t/fix
 cc -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -o wasmi wasmi.c
 python3 t/mkwasm.py
 mkwasm: 24 fixtures, 11833 cases
+t/fix: 11833 cases in 24 modules, matching the pinned count
 11833 passed, 0 failed
 ```
 
@@ -39,6 +40,7 @@ $ make test-asan
 cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -Wall -Wextra -Wpedantic -o wasmi-asan wasmi.c
 python3 t/mkwasm.py
 mkwasm: 24 fixtures, 11833 cases
+t/fix: 11833 cases in 24 modules, matching the pinned count
 11833 passed, 0 failed
 ```
 

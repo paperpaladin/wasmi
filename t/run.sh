@@ -42,7 +42,7 @@ if [ "$cases" -ne "$CASES_EXPECTED" ]; then
 	printf '  otherwise t/fix is stale or truncated -- re-run t/mkwasm.py\n' >&2
 	exit 1
 fi
-printf '%d cases catalogued across %d modules\n' \
+printf 't/fix: %d cases in %d modules, matching the pinned count\n' \
 	"$cases" "$(ls t/fix/*.cases 2>/dev/null | wc -l)"
 
 err=$(mktemp) || exit 1
