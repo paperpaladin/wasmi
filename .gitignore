@@ -5,4 +5,7 @@ core
 core.*
 vgcore.*
 t/fix/
-t/__pycache__/
+# Any depth, not just t/: the narrow pattern covered the one directory that
+# happened to contain bytecode when it was written, and hist/ grew one the
+# first time hist/build.py was run.
+__pycache__/
