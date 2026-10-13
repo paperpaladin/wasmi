@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Generate progressive versions of wasmi.c for a bisectable history.
 Level N = the final file minus every feature whose level is > N."""
-import sys
+import os, sys
 
-FINAL = open("/tmp/hist/wasmi_final.c").read()
+# Beside this file, not /tmp/hist: wasmi_final.c is tracked in this
+# directory, and /tmp is tmpfs here -- the absolute path stopped
+# resolving at the first reboot and could never have worked on
+# anyone else's machine.
+HERE = os.path.dirname(os.path.abspath(__file__))
+FINAL = open(os.path.join(HERE, "wasmi_final.c"), encoding="utf-8").read()
 CASE_END = "\t\t\tbreak;\n\t\t}\n"
 
 # ("s", sub)            remove substring

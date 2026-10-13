@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
+"""Regenerate wasmi's history: 32 commits replayed from per-version sources.
+
+DESTRUCTIVE. main() deletes the repository's .git and rebuilds it. Read the
+guards in main() before running it.
+
+The paths used to be absolute -- REPO was "/home/x/projects/wasmi" and H was
+"/tmp/hist". Both were wrong in ways that only show up on someone else's
+machine, and the REPO one was dangerous rather than merely broken: run from a
+clone, the script would delete the .git of the ORIGINAL repository, which is
+the one place the history it is about to regenerate actually exists. They are
+derived from this file's own location now, so the script can only ever act on
+the checkout it is part of.
+"""
 import os, subprocess, sys, shutil
 
-REPO = "/home/x/projects/wasmi"
-H = "/tmp/hist"
+H = os.path.dirname(os.path.abspath(__file__))     # this directory: gen.py, genpy.py, b*/
+REPO = os.path.dirname(H)                          # the repository containing it
 sys.path.insert(0, H)
 import gen, genpy
 
@@ -97,7 +110,24 @@ def a01():
     write("wasmi.c", gen.version(1))
     write("Makefile", MF_BUILD)
     write(".gitignore", GITIGNORE)
-    shutil.copy("/usr/share/common-licenses/GPL-3", os.path.join(REPO, "LICENSE"))
+    # /usr/share/common-licenses/GPL-3 is a Debian path and does not exist on
+    # Fedora, where this was written -- so this step failed on its own author's
+    # machine. The repository already ships the licence; reuse it, and say so
+    # rather than writing a truncated or empty LICENSE if it is somehow absent.
+    _lic = os.path.join(REPO, "LICENSE")
+    if os.path.exists(_lic):
+        _text = open(_lic, encoding="utf-8").read()
+    else:
+        _text = None
+        for _c in ("/usr/share/common-licenses/GPL-3",
+                   "/usr/share/licenses/gpl-3.0.txt",
+                   "/usr/share/doc/licenses/gpl-3.0.txt"):
+            if os.path.exists(_c):
+                _text = open(_c, encoding="utf-8").read()
+                break
+        if _text is None:
+            sys.exit("build.py: no GPL-3 text found; put one at %s first" % _lic)
+    write("LICENSE", _text)
 
 
 step("""skeleton: bounds-checked reader, magic/version, section framing
@@ -875,12 +905,59 @@ from self-assessment to evidence.""", ["README.md", "PLAN.md"], a27)
 
 
 # ================================================================== run
+def guards():
+    """Refuse the destructive run unless it is clearly the intended one.
+
+    Three things this protects against, all of which were reachable before:
+
+      * Running it on something that is not wasmi. REPO is derived now, but a
+        copy of this file dropped elsewhere would still delete a .git, so the
+        target has to look like this project.
+      * Running it by accident. It deletes 32 commits of history and rebuilds
+        them; that is not something to do because a command was in the shell
+        history. --yes is required.
+      * Running it after the author rewrite. It used to hardcode
+        user.name=PLACEHOLDER, so a run after `cq id` would silently put every
+        wasmi commit back on the placeholder author while the other 37 repos
+        kept the real one. The configured identity is reused if there is one.
+    """
+    if not os.path.exists(os.path.join(REPO, "wasmi.c")):
+        sys.exit("build.py: %s does not look like wasmi (no wasmi.c); refusing"
+                 % REPO)
+    if "--yes" not in sys.argv:
+        n = "unknown"
+        try:
+            # --branches, not --all: refs/original from an earlier rewrite
+            # would be counted too, and a safety prompt that overstates what
+            # it is about to delete teaches you to distrust the number.
+            n = subprocess.run(["git", "-C", REPO, "rev-list", "--count", "--branches"],
+                               capture_output=True, text=True).stdout.strip() or "0"
+        except OSError:
+            pass
+        sys.exit("build.py: this DELETES %s/.git (%s commits) and rebuilds it\n"
+                 "  from the per-version sources in %s.\n"
+                 "  Re-run with --yes if that is what you want." % (REPO, n, H))
+
+
+def identity():
+    """The repo's configured identity, or the placeholder if it has none."""
+    out = {}
+    for key, fallback in (("user.name", "PLACEHOLDER"),
+                          ("user.email", "placeholder@invalid")):
+        r = subprocess.run(["git", "-C", REPO, "config", "--get", key],
+                           capture_output=True, text=True)
+        out[key] = r.stdout.strip() or fallback
+    return out
+
+
 def main():
+    guards()
+    who = identity()
     if os.path.exists(os.path.join(REPO, ".git")):
         shutil.rmtree(os.path.join(REPO, ".git"))
     sh("git", "init", "-q", "-b", "master")
-    sh("git", "config", "user.name", "PLACEHOLDER")
-    sh("git", "config", "user.email", "placeholder@invalid")
+    sh("git", "config", "user.name", who["user.name"])
+    sh("git", "config", "user.email", who["user.email"])
     for i, (msg, files, act) in enumerate(C, 1):
         act()
         commit(msg, files)

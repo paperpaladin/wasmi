@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Stage t/mkwasm.py for the git history.  Stage N = the final file minus the
 suites that arrive after N."""
-import sys
+import os, sys
 
-FINAL = open("/tmp/hist/mkwasm_final.py").read()
+# Beside this file, not /tmp/hist: mkwasm_final.py is tracked in this
+# directory, and /tmp is tmpfs here -- the absolute path stopped
+# resolving at the first reboot and could never have worked on
+# anyone else's machine.
+HERE = os.path.dirname(os.path.abspath(__file__))
+FINAL = open(os.path.join(HERE, "mkwasm_final.py"), encoding="utf-8").read()
 
 SPLIT_REF = "# =================================================================== Python ref"
 SPLIT_MAIN = "# ========================================================================= main"
