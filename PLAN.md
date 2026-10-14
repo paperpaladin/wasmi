@@ -11,9 +11,9 @@ apart without parsing prose:
 
 | outcome | stdout | stderr | exit |
 |---|---|---|---|
-| success | the result, signed decimal | -- | 0 |
-| runtime trap | `trap:<code>` | -- | 1 |
-| malformed / unsupported module | -- | `error: <reason>` | 2 |
+| success | the result, signed decimal | (nothing) | 0 |
+| runtime trap | `trap:<code>` | (nothing) | 1 |
+| malformed / unsupported module | (nothing) | `error: <reason>` | 2 |
 
 Trap codes are a closed set: `div0`, `int-overflow`, `oob`, `unreachable`,
 `undefined-element`, `uninitialized-element`, `indirect-call-type-mismatch`,
@@ -23,13 +23,13 @@ In scope: the complete i32 and i64 instruction set, structured control flow,
 locals, globals, one table, one linear memory, the start function, and the type,
 function, table, memory, global, export, start, element, code and data sections.
 
-Out of scope and *rejected rather than approximated*: f32/f64 (any valtype, any
+Out of scope and *rejected, not approximated*: f32/f64 (any valtype, any
 opcode, any constant), imports, and everything post-MVP.
 
 ## Hard invariant
 
-1. **A malformed or malicious module is rejected or traps; it never corrupts the
-   host.** Every byte of a `.wasm` file is attacker-controlled. Decoding
+1. A malformed or malicious module is rejected or traps; it never corrupts the
+   host. Every byte of a `.wasm` file is attacker-controlled. Decoding
    therefore bounds-checks every read, caps every LEB128 length, and rejects
    every out-of-range index *before* execution starts. Execution bounds-checks
    every memory access and every table access, and every stack has a validated
@@ -37,7 +37,7 @@ opcode, any constant), imports, and everything post-MVP.
    `-fno-sanitize-recover=all`) runs the entire fixture suite, including the
    malformed-module fixtures, and must be clean.
 
-2. **Every arithmetic result matches a value computed independently in Python.**
+2. Every arithmetic result matches a value computed independently in Python.
    No expected value in the test suite was ever produced by running `wasmi`.
    They are all computed in `t/mkwasm.py` from Python integer arithmetic with
    32/64-bit wrapping and truncating division written out by hand. If the C and
@@ -50,25 +50,25 @@ Neither invariant is a claim of spec conformance. See `## Oracle`.
 Ranked by how much an outside party should believe it. The top entry is the one
 that would make this project's claims external, and it is **not reached**.
 
-1. **The official WebAssembly spec testsuite -- NOT YET REACHED.** `wasmi` has
+1. The official WebAssembly spec testsuite: NOT YET REACHED. `wasmi` has
    never been scored by `spec/test/core`. That suite is the only authority that
    is independent of this repository's author, and until a real pass rate is
    published here, every claim below is self-assessment. This is the single
    biggest gap in the project and the first item of Milestone 1. Running it also
    needs a `.wast` driver and `wat2wasm`, neither of which exists here.
 
-2. **A differential fixture suite against Python (11,833 cases).** For every
+2. A differential fixture suite against Python (11,833 cases). For every
    case, `t/mkwasm.py` assembles a `.wasm` binary *and* computes the expected
    answer in Python, from Python semantics, with the wrapping and the truncating
    division spelled out explicitly. This is a genuine differential test: two
    independent implementations of the same arithmetic must agree. What it proves:
    `wasmi` agrees with a second implementation on the operand values chosen.
-   What it does **not** prove: that either implementation matches the spec, that
+   What it does not prove: that either implementation matches the spec, that
    the hand-written assembler in `t/mkwasm.py` emits correct binaries (if it is
    wrong, both halves are tested against the same wrong input), or that any case
    outside the matrix works.
 
-3. **Mutation testing of the suite itself.** Thirteen deliberate single-line
+3. Mutation testing of the suite itself. Thirteen deliberate single-line
    bugs were injected into `wasmi.c` and the suite was re-run. Every one was
    caught, most by double-digit numbers of cases: unmasked shift counts (112
    failures), `lt_s` as unsigned (110), flooring instead of truncating `rem_s`
@@ -79,38 +79,38 @@ that would make this project's claims external, and it is **not reached**.
    `INT32_MIN / -1` trap (1). This measures the suite's sensitivity, not the
    interpreter's correctness.
 
-4. **ASan + UBSan over the whole suite.** Catches the memory and
-   undefined-behaviour errors a bytecode interpreter attracts -- shifts at the
-   bit width, signed overflow, off-by-one bounds checks -- that a plain `-O2`
+4. ASan + UBSan over the whole suite. Catches the memory and
+   undefined-behaviour errors a bytecode interpreter attracts, shifts at the
+   bit width, signed overflow, off-by-one bounds checks, that a plain `-O2`
    build silently gets away with.
 
-5. **The compiler.** `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`.
+5. The compiler. `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`.
    `-Wsequence-point` found a real bug the fixtures missed (see the commit log):
    `PUSH(clz32(P32()))` modifies the stack pointer twice without an intervening
    sequence point. This gcc happened to pick a working evaluation order, so the
    tests passed anyway. A test suite that passes is not evidence of defined
    behaviour.
 
-6. **A randomized differential sweep.** 6,960 extra random and corner-biased
+6. A randomized differential sweep. 6,960 extra random and corner-biased
    operand pairs compared against the Python reference, 0 divergences. Run ad
    hoc, not committed, because it is not reproducible from the repo as it stands.
 
 ## Non-goals
 
-- **Floating point.** Not partially, not approximately. Any module mentioning
+- Floating point. Not partially, not approximately. Any module mentioning
   f32 or f64 is refused at load time. Getting NaN propagation, signed zero and
   rounding right is a project of its own, and a wrong answer is worse than a
   clear refusal.
-- **Imports, WASI, host functions.** `wasmi` runs self-contained modules.
-- **Full type validation.** The validation pass checks structure, indices and
+- Imports, WASI, host functions. `wasmi` runs self-contained modules.
+- Full type validation. The validation pass checks structure, indices and
   operand-stack *depth*, not operand *types*. A module that is structurally
   sound but type-confused (`i64.add` on two i32s) will run and produce garbage
   instead of being rejected. This is a correctness gap, not a memory-safety one.
-- **Speed.** A switch-dispatch loop over the original bytes. No threading of the
+- Speed. A switch-dispatch loop over the original bytes. No threading of the
   interpreter, no superinstructions, no JIT.
-- **Post-MVP proposals.** No multi-value, no reference types, no bulk memory, no
+- Post-MVP proposals. No multi-value, no reference types, no bulk memory, no
   SIMD, no tail calls, no exceptions, no threads, no 64-bit memories.
-- **A `.wat` parser.** `t/mkwasm.py` assembles a flat instruction listing, which
+- A `.wat` parser. `t/mkwasm.py` assembles a flat instruction listing, which
   is enough for fixtures and nothing more.
 
 ## Commit sequence
@@ -158,16 +158,16 @@ that would make this project's claims external, and it is **not reached**.
 - [x] `make test-asan`.
 - [x] README and PLAN.
 
-### Milestone 1 -- make the oracle external
+### Milestone 1: make the oracle external
 
 - [ ] Vendor `spec/test/core/*.wast`, write a `.wast` driver, and publish the
       real pass/fail count per file in the README.
       why: this is the only entry on the oracle list that an outsider has any
       reason to trust; everything this repo currently claims is self-scored.
-      BLOCKED, and checked rather than assumed: there is no `.wast` file
+      BLOCKED, and checked, not assumed: there is no `.wast` file
       anywhere on this machine, and neither `wat2wasm` nor `wasm-tools` is
       installed, so the corpus cannot be produced locally either. It has to be
-      fetched -- `testsuite/` from the WebAssembly/spec repository -- and this
+      fetched: `testsuite/` from the WebAssembly/spec repository, and this
       environment has no network. Nothing in the item can start until the files
       are here.
       This is a different kind of blocker from the rest of the queue and worth
@@ -175,8 +175,8 @@ that would make this project's claims external, and it is **not reached**.
       on a download. If you are reading this with a network, the sequence is
       `git clone https://github.com/WebAssembly/testsuite`, commit the `.wast`
       files under `t/spec/` so the corpus is pinned and the suite stays
-      reproducible, and only then write the driver. Vendoring rather than
-      cloning at test time matters for the same reason `width_table.h` is
+      reproducible, and only then write the driver. Vendoring,
+      not cloning at test time matters for the same reason `width_table.h` is
       committed in vtparse: a suite whose corpus arrives over the network is
       not a suite.
 - [ ] Full operand *type* validation, not just depth.
@@ -202,7 +202,7 @@ that would make this project's claims external, and it is **not reached**.
       why: a one-off run that is not in the repo proves nothing to a reader.
 - [ ] Multi-value blocks and the post-MVP block type encoding.
       why: blocktype is read as a single byte today, which is a latent
-      incompatibility rather than a deliberate limit.
+      incompatibility, not a deliberate limit.
 - [ ] Replace the fixed `VSTACK_MAX` / `CSTACK_MAX` / `CALLDEPTH_MAX` ceilings
       with growth on demand, keeping the trap as the last resort.
       why: the ceilings are guesses; a real module that trips one gets a trap
