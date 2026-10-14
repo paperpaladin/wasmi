@@ -105,7 +105,7 @@ that would make this project's claims external, and it is **not reached**.
 - Full type validation. The validation pass checks structure, indices and
   operand-stack *depth*, not operand *types*. A module that is structurally
   sound but type-confused (`i64.add` on two i32s) will run and produce garbage
-  instead of being rejected. This is a correctness gap, not a memory-safety one.
+  instead of being rejected. This is a correctness gap and no memory-safety one.
 - Speed. A switch-dispatch loop over the original bytes. No threading of the
   interpreter, no superinstructions, no JIT.
 - Post-MVP proposals. No multi-value, no reference types, no bulk memory, no
