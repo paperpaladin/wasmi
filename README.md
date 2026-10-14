@@ -66,7 +66,7 @@ Read this section before believing anything else in this file.
 
 The official WebAssembly spec testsuite is not run. `wasmi` has never been
 scored against `spec/test/core`. There is no pass rate to quote, because none
-was measured. Everything below is the author testing their own work, which is a
+was measured. Everything below is the author testing their own work, a
 much weaker claim than being scored by someone else's suite, and the gap matters:
 an interpreter that passes its author's fixtures has been tested against the
 author's understanding of the spec, including wherever that understanding is
@@ -133,7 +133,7 @@ disagreement: it was a one-element out-of-bounds read in the validation pass
 label stack to empty). It segfaulted on every module with a function body, which
 is to say the very first time a fixture was ever run. ASan named the line. After
 that one line, the arithmetic suites went green on the first attempt and stayed
-green, which is a less exciting story than "the differential caught a subtle
+green, a less exciting story than "the differential caught a subtle
 wrapping bug", and is what actually happened.
 
 ## Status

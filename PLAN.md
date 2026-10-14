@@ -201,7 +201,7 @@ that would make this project's claims external, and it is **not reached**.
       (`make fuzz-arith`).
       why: a one-off run that is not in the repo proves nothing to a reader.
 - [ ] Multi-value blocks and the post-MVP block type encoding.
-      why: blocktype is read as a single byte today, which is a latent
+      why: blocktype is read as a single byte today, a latent
       incompatibility, not a deliberate limit.
 - [ ] Replace the fixed `VSTACK_MAX` / `CSTACK_MAX` / `CALLDEPTH_MAX` ceilings
       with growth on demand, keeping the trap as the last resort.
