@@ -60,7 +60,7 @@ that would make this project's claims external, and it is **not reached**.
 2. A differential fixture suite against Python (11,833 cases). For every
    case, `t/mkwasm.py` assembles a `.wasm` binary *and* computes the expected
    answer in Python, from Python semantics, with the wrapping and the truncating
-   division spelled out explicitly. This is a genuine differential test: two
+   division spelled out explicitly. This is a genuine differential test. Two
    independent implementations of the same arithmetic must agree. What it proves:
    `wasmi` agrees with a second implementation on the operand values chosen.
    What it does not prove: that either implementation matches the spec, that
@@ -70,7 +70,7 @@ that would make this project's claims external, and it is **not reached**.
 
 3. Mutation testing of the suite itself. Thirteen deliberate single-line
    bugs were injected into `wasmi.c` and the suite was re-run. Every one was
-   caught, most by double-digit numbers of cases: unmasked shift counts (112
+   caught, most by double-digit numbers of cases. Unmasked shift counts (112
    failures), `lt_s` as unsigned (110), flooring instead of truncating `rem_s`
    (76), `load8_s` without sign extension (14), an ignored static memarg offset
    (10), a loop branch that exits instead of iterating (12), a `br_table`
