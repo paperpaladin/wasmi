@@ -221,7 +221,7 @@ First, structure.  WebAssembly control flow is *structured*: there are no
 computed jumps, only `br N` to the N-th enclosing label.  So a label stack is
 enough to match every block/loop/if against its else/end, and resolve_jumps()
 turns that into a pc-indexed table.  A branch then costs an array lookup instead
-of a forward scan over the body, and crucially the scan happens once at load time
+of a forward scan over the body, and the scan happens once at load time
 where a malformed nesting is a rejection rather than a runaway loop.
 
 Second, operand-stack depth.  The height is tracked symbolically -- not the types,
