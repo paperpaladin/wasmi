@@ -24,6 +24,7 @@ meaning "the module must be rejected at load time with exit status 2".
 """
 
 import os
+import shutil
 import sys
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fix")
@@ -908,6 +909,289 @@ def s_globals():
     return emit("globals", m, cases)
 
 
+# ------------------------------------------------------------ type validation
+# Both directions of the claim, kept apart on purpose: a validator that
+# rejects everything satisfies the "rejects the bad" half perfectly.
+#
+# s_types() is the ACCEPT direction: well-typed modules that exercise both
+# value types, select without an annotation, block/loop result types, the
+# loop-label-takes-nothing rule and the spec's polymorphic stack in
+# unreachable code.  Every one must load AND return the right value.
+#
+# s_type_reject() is the REJECT direction: one module per defect.
+#
+# Neither direction is self-scored.  t/v8check.js asks V8, an outside
+# WebAssembly implementation, whether each of these modules is valid, and the
+# answers have to line up with what is declared here.
+@suite
+def s_types():
+    m = Mod()
+    m.mem = (1, None)
+    m.globals.append(("i64", False, asm("i64.const -9000000000") + b"\x0b"))
+
+    # select with no type annotation, at both widths, in the same module.
+    m.func("sel64", ["i64", "i64", "i32"], ["i64"],
+           "local.get 0\nlocal.get 1\nlocal.get 2\nselect\nend")
+    m.func("sel32", ["i32", "i32", "i32"], ["i32"],
+           "local.get 0\nlocal.get 1\nlocal.get 2\nselect\nend")
+
+    # block with an i64 result, and a block result consumed by a conversion.
+    m.func("blk64", [], ["i64"], "block i64\ni64.const -5000000000\nend\nend")
+    m.func("blkwrap", [], ["i32"],
+           "block i64\ni64.const 0x123456789\nend\ni32.wrap_i64\nend")
+
+    # loop with a result type.  The br_if leaves the stack empty, which is
+    # only legal because a branch to a LOOP label takes the loop's parameters
+    # (none here), not its results.  Give the loop a block's rule instead and
+    # this stops validating.
+    m.func("loopres", ["i32"], ["i32"],
+           "loop i32\n"
+           "  local.get 0\n  i32.const 2\n  i32.mul\n  local.set 0\n"
+           "  local.get 0\n  i32.const 100\n  i32.lt_s\n  br_if 0\n"
+           "  local.get 0\n"
+           "end\nend")
+    m.func("loopzero", [], ["i32"],
+           "loop i32\ni32.const 0\nbr_if 0\ni32.const 42\nend\nend")
+
+    # Unreachable code is validated polymorphically, not skipped: the i32.add
+    # below has no operands and is still well typed.
+    m.func("polyadd", [], ["i32"], "unreachable\ni32.add\nend")
+    m.func("brdead", [], ["i32"],
+           "block i32\ni32.const 7\nbr 0\ni32.const 1\ni32.add\nend\nend")
+    m.func("retdead", [], ["i32"], "i32.const 11\nreturn\ni32.const 1\ndrop\nend")
+    # One select arm comes from the polymorphic bottom, so the other decides.
+    m.func("selpoly", [], ["i64"],
+           "unreachable\ni64.const 1\ni32.const 0\nselect\nend")
+
+    # Entering unreachable code DISCARDS whatever the frame had on the stack:
+    # the spec replaces it with the polymorphic bottom.  Both of these leave an
+    # i64 behind that nothing ever consumes, and both are valid because of it.
+    m.func("deadstack", [], ["i32"],
+           "block\ni64.const 1\nbr 0\nend\ni32.const 5\nend")
+    m.func("deadtrap", [], ["i32"], "i64.const 1\nunreachable\nend")
+
+    # br_table whose targets all agree with the default.
+    m.func("brtbl", ["i32"], ["i32"],
+           "block\nblock\nlocal.get 0\nbr_table 0 1 1\nend\n"
+           "i32.const 10\nreturn\nend\ni32.const 20\nend")
+
+    # if/else with an i64 result.
+    m.func("ifres", ["i32"], ["i64"],
+           "local.get 0\nif i64\ni64.const 100\nelse\ni64.const -200\nend\nend")
+
+    # i64 through memory, an i64 global, an i64 local via local.tee.
+    m.func("mem64", ["i64"], ["i64"],
+           "i32.const 8\nlocal.get 0\ni64.store\ni32.const 8\ni64.load\nend")
+    m.func("glob64", [], ["i64"], "global.get 0\nend")
+    m.func("teetype", ["i64"], ["i32"],
+           "local.get 0\nlocal.tee 1\ni64.eqz\nend", locals=["i64"])
+
+    # call and call_indirect with an i64 parameter.
+    h = m.func("h64", ["i64"], ["i64"], "local.get 0\ni64.const 3\ni64.mul\nend")
+    m.func("callmix", ["i32"], ["i64"],
+           "local.get 0\ni64.extend_i32_s\ncall %d\nend" % h)
+    m.table = 1
+    m.elems.append((0, [h]))
+    m.func("indmix", ["i64"], ["i64"],
+           "local.get 0\ni32.const 0\ncall_indirect %d\nend" % m.ftype(["i64"], ["i64"]))
+
+    def py_loopres(n):
+        while True:
+            n = s32(n * 2)
+            if not (n < 100):
+                return n
+
+    cases = [
+        ("7", "sel64", [7, -9, 1]), ("-9", "sel64", [7, -9, 0]),
+        ("0", "sel64", [0, 1, 1]),
+        ("7", "sel32", [7, -9, 1]), ("-9", "sel32", [7, -9, 0]),
+        ("-5000000000", "blk64", []),
+        (str(s32(0x123456789 & MASK32)), "blkwrap", []),
+        (str(py_loopres(3)), "loopres", [3]), (str(py_loopres(1)), "loopres", [1]),
+        (str(py_loopres(-200)), "loopres", [-200]),
+        ("42", "loopzero", []),
+        ("trap:unreachable", "polyadd", []),
+        ("7", "brdead", []),
+        ("5", "deadstack", []), ("trap:unreachable", "deadtrap", []),
+        ("11", "retdead", []),
+        ("trap:unreachable", "selpoly", []),
+        ("10", "brtbl", [0]), ("20", "brtbl", [1]), ("20", "brtbl", [7]),
+        ("100", "ifres", [1]), ("-200", "ifres", [0]),
+        ("-9000000000", "mem64", [-9000000000]),
+        ("9223372036854775807", "mem64", [9223372036854775807]),
+        ("-9000000000", "glob64", []),
+        ("1", "teetype", [0]), ("0", "teetype", [-1]),
+        ("-3000000000", "callmix", [-1000000000]),
+        ("21", "indmix", [7]),
+    ]
+    return emit("types", m, cases)
+
+
+@suite
+def s_type_reject():
+    n = 0
+
+    def rej(fname, mod, note):
+        nonlocal n
+        n += emit("ty_" + fname, mod.build() if isinstance(mod, Mod) else mod,
+                  [("!error", "f", [])])
+
+    def one(fname, params, results, body, note, locals=(), setup=None):
+        m = Mod()
+        if setup:
+            setup(m)
+        m.func("f", params, results, body, locals=locals)
+        rej(fname, m, note)
+
+    # The headline case: an i64 operator applied to i32 operands.  Depth
+    # tracking accepts this and the interpreter then reads garbage.
+    one("add_mixed", [], ["i64"], "i32.const 1\ni32.const 2\ni64.add\nend",
+        "i64.add on two i32s")
+    one("add_mixed2", [], ["i32"], "i64.const 1\ni64.const 2\ni32.add\nend",
+        "i32.add on two i64s")
+
+    # Function results.
+    one("result", [], ["i32"], "i64.const 1\nend", "returns i64 where i32 declared")
+    one("result_none", [], [], "i32.const 1\nend", "leaves an operand at function end")
+    one("result_missing", [], ["i32"], "nop\nend", "returns nothing where i32 declared")
+
+    # Locals and globals.
+    one("local_set", [], [], "i32.const 1\nlocal.set 0\nend",
+        "local.set i64 from i32", locals=["i64"])
+    one("local_get", [], ["i32"], "local.get 0\nend",
+        "local.get i64 as i32", locals=["i64"])
+    # Exactly one past the end of the locals array.  This is the case that
+    # keeps the `lt` buffer honest: run under make test-asan with the bounds
+    # check in prepare() broken, a rounded-up `lt` swallows the read silently
+    # (and the garbage byte reads as the polymorphic type, so the module
+    # validates), while a `lt` trimmed to nlocals makes ASan name the line.
+    one("local_past", [], ["i64"], "local.get 1\nend",
+        "local index one past the end", locals=["i64"])
+
+    def g64(m):
+        m.globals.append(("i64", True, asm("i64.const 0") + b"\x0b"))
+    one("global_set", [], [], "i32.const 1\nglobal.set 0\nend",
+        "global.set i64 from i32", setup=g64)
+    one("global_get", [], ["i32"], "global.get 0\nend",
+        "global.get i64 as i32", setup=g64)
+
+    # Block and loop result types.
+    one("block_res", [], ["i64"], "block i64\ni32.const 1\nend\nend",
+        "block declares i64, body leaves i32")
+    one("block_extra", [], ["i32"], "block i32\ni32.const 1\ni32.const 2\nend\nend",
+        "block leaves a spare operand")
+    one("loop_res", [], ["i64"], "loop i64\ni32.const 1\nend\nend",
+        "loop declares i64, body leaves i32")
+
+    # if/else.
+    one("if_arms", [], ["i32"],
+        "i32.const 0\nif i32\ni32.const 1\nelse\ni64.const 2\nend\nend",
+        "if arms produce different types")
+    one("if_noelse", [], ["i32"], "i32.const 0\nif i32\ni32.const 1\nend\nend",
+        "if with a result type and no else")
+    one("if_cond", [], [], "i64.const 1\nif\nend\nend", "if condition is i64")
+
+    # `return` carries the function's result types.  Nothing else can reject
+    # these: the implicit `end` that follows sees an unreachable frame, where
+    # a pop of the wrong type succeeds.
+    one("return_type", [], ["i64"], "i32.const 1\nreturn\nend",
+        "return carries i32 from a function declared i64")
+    one("return_empty", [], ["i64"], "return\nend",
+        "return carries nothing from a function declared i64")
+
+    # Branches.
+    one("br_value", [], ["i32"], "block i32\ni64.const 1\nbr 0\nend\nend",
+        "br carries i64 to an i32 label")
+    one("br_empty", [], ["i32"], "block i32\nbr 0\nend\nend",
+        "br to an i32 label with an empty stack")
+    one("brif_cond", [], [], "block\ni64.const 1\nbr_if 0\nend\nend",
+        "br_if condition is i64")
+    one("brtable_cond", [], [], "block\ni64.const 0\nbr_table 0 0\nend\nend",
+        "br_table index is i64")
+    # Both of these put enough operands on the stack for the default label, so
+    # the only thing that can reject them is the rule that every br_table
+    # target must agree with the default.  The obvious version -- two labels of
+    # different arity and nothing on the stack -- is rejected by the underflow
+    # check instead, and so cannot see the agreement rule at all.
+    one("brtable_arity", [], [],
+        "block\nblock i32\ni32.const 7\ni32.const 0\nbr_table 0 1\nend\n"
+        "drop\nend\nend",
+        "br_table target takes i32, default takes nothing")
+    one("brtable_type", [], ["i64"],
+        "block i64\nblock i32\ni64.const 1\ni32.const 0\nbr_table 0 1\nend\n"
+        "drop\ni64.const 5\nend\nend",
+        "br_table target takes i32, default takes i64")
+
+    # select.
+    # The result type is chosen so that whichever arm a broken select picks,
+    # the function signature accepts it: otherwise the return-type check
+    # rejects the module and the select rule is never exercised.  Both
+    # orderings, because a rule dropped from one operand is invisible when the
+    # interesting type is on the other.
+    one("select_arms", [], ["i64"],
+        "i32.const 1\ni64.const 2\ni32.const 0\nselect\nend",
+        "select arms i32/i64, i64 on top")
+    one("select_arms2", [], ["i32"],
+        "i64.const 1\ni32.const 2\ni32.const 0\nselect\nend",
+        "select arms i64/i32, i32 on top")
+    one("select_cond", [], ["i32"],
+        "i32.const 1\ni32.const 2\ni64.const 0\nselect\nend",
+        "select condition is i64")
+
+    # Calls.
+    m = Mod()
+    m.func("h", ["i64"], ["i64"], "local.get 0\nend")
+    m.func("f", [], ["i64"], "i32.const 1\ncall 0\nend")
+    rej("call_arg", m, "call passes i32 where i64 declared")
+
+    m = Mod()
+    m.table = 1
+    ti = m.ftype(["i64"], ["i64"])
+    m.func("f", [], ["i64"], "i32.const 1\ni32.const 0\ncall_indirect %d\nend" % ti)
+    rej("callind_arg", m, "call_indirect passes i32 where i64 declared")
+
+    m = Mod()
+    m.table = 1
+    ti = m.ftype(["i64"], ["i64"])
+    m.func("f", [], ["i64"], "i64.const 1\ni64.const 0\ncall_indirect %d\nend" % ti)
+    rej("callind_index", m, "call_indirect table index is i64")
+
+    # Memory.
+    def mem(m_):
+        m_.mem = (1, None)
+    one("store_val", [], [], "i32.const 0\ni64.const 1\ni32.store\nend",
+        "i32.store given an i64 value", setup=mem)
+    one("store_addr", [], [], "i64.const 0\ni32.const 1\ni32.store\nend",
+        "i32.store given an i64 address", setup=mem)
+    one("load_addr", [], ["i32"], "i64.const 0\ni32.load\nend",
+        "i32.load given an i64 address", setup=mem)
+    one("load_res", [], ["i64"], "i32.const 0\ni32.load\nend",
+        "i32.load result used as i64", setup=mem)
+    one("memgrow_arg", [], ["i32"], "i64.const 1\nmemory.grow\nend",
+        "memory.grow given an i64", setup=mem)
+
+    # Conversions and unary operators.
+    one("wrap_arg", [], ["i32"], "i32.const 1\ni32.wrap_i64\nend",
+        "i32.wrap_i64 given an i32")
+    one("extend_arg", [], ["i64"], "i64.const 1\ni64.extend_i32_s\nend",
+        "i64.extend_i32_s given an i64")
+    one("eqz_arg", [], ["i32"], "i64.const 1\ni32.eqz\nend", "i32.eqz given an i64")
+    one("cmp_mixed", [], ["i32"], "i32.const 1\ni64.const 2\ni64.lt_s\nend",
+        "i64.lt_s with one i32 operand")
+
+    # Unreachable code is still type-checked.  These are the cases that
+    # separate "polymorphic" from "not looked at".
+    one("dead_result", [], ["i32"], "unreachable\ni64.const 1\nend",
+        "dead code leaves i64 where i32 is declared")
+    one("dead_br", [], ["i32"],
+        "block i32\ni32.const 7\nbr 0\ni64.const 1\nend\nend",
+        "dead code after br leaves i64 at an i32 block end")
+    one("dead_add", [], ["i32"], "unreachable\ni64.const 1\ni32.add\nend",
+        "i32.add on an i64 pushed in dead code")
+
+    return n
+
+
 # ----------------------------------------------------- modules that must be rejected
 @suite
 def s_reject():
@@ -915,7 +1199,12 @@ def s_reject():
 
     def rej(fname, blob, note):
         nonlocal n
-        n += emit(fname, blob, [("!error", "_", [])])
+        # The function name has to be one the module really exports.  It was
+        # "_" here, which no fixture exports, so a module that LOADED still
+        # exited 2 with "no exported function named '_'" and scored as a
+        # rejection: the entire reject direction passed without validating
+        # anything.  See README, "the harness bug".
+        n += emit(fname, blob, [("!error", "f", [])])
 
     # f32 in a signature: honest refusal, not a miscompile
     m = Mod()
@@ -985,6 +1274,11 @@ def s_reject():
 
 # ========================================================================= main
 def main():
+    # Start from an empty t/fix.  mkwasm only ever wrote files, so a renamed or
+    # deleted fixture stayed behind, was counted by t/run.sh and by
+    # t/v8check.js, and would have been committed.  One did.
+    if os.path.isdir(OUT):
+        shutil.rmtree(OUT)
     total = 0
     files = 0
     for fn in SUITES:

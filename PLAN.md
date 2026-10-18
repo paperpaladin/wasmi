@@ -47,17 +47,33 @@ Neither invariant is a claim of spec conformance. See `## Oracle`.
 
 ## Oracle
 
-Ranked by how much an outside party should believe it. The top entry is the one
-that would make this project's claims external, and it is **not reached**.
+Ranked by how much an outside party should believe it. Entry 1, the one that
+would make every claim here external, is still **not reached**. Entry 0 was
+added when it turned out that an outside WebAssembly implementation had been
+installed on this machine the whole time.
+
+0. V8, through node. REACHED, for validity only. V8 is a production
+   WebAssembly implementation written by people who have never seen this code,
+   and `WebAssembly.validate` is its spec validator. `t/v8check.js` asks it
+   about all 67 fixtures and requires its accept/reject verdict to match the
+   fixture's declaration; `t/run.sh` requires wasmi to match the same
+   declaration, so the two together compare wasmi against V8. What it proves:
+   every module this suite calls well formed really is valid WebAssembly, and
+   every module it calls malformed really is not. What it does not prove:
+   anything about a module this repository did not write, anything about
+   *which* error is reported, and anything about computed values, which V8 is
+   not asked for.
 
 1. The official WebAssembly spec testsuite: NOT YET REACHED. `wasmi` has
-   never been scored by `spec/test/core`. That suite is the only authority that
-   is independent of this repository's author, and until a real pass rate is
-   published here, every claim below is self-assessment. This is the single
-   biggest gap in the project and the first item of Milestone 1. Running it also
-   needs a `.wast` driver and `wat2wasm`, neither of which exists here.
+   never been scored by `spec/test/core`. That suite is the only authority
+   independent of this repository's author AND of the modules written here,
+   and until a real pass rate is published, nothing above covers a module
+   somebody else chose. This is the biggest remaining gap in the project and
+   the first item of Milestone 1. Running it still needs a `.wast` driver and
+   a `.wat` assembler, neither of which exists here, though V8 can now stand
+   in for the latter's validity check.
 
-2. A differential fixture suite against Python (11,833 cases). For every
+2. A differential fixture suite against Python (11,904 cases). For every
    case, `t/mkwasm.py` assembles a `.wasm` binary *and* computes the expected
    answer in Python, from Python semantics, with the wrapping and the truncating
    division spelled out explicitly. This is a genuine differential test. Two
@@ -102,10 +118,9 @@ that would make this project's claims external, and it is **not reached**.
   rounding right is a project of its own, and a wrong answer is worse than a
   clear refusal.
 - Imports, WASI, host functions. `wasmi` runs self-contained modules.
-- Full type validation. The validation pass checks structure, indices and
-  operand-stack *depth*, not operand *types*. A module that is structurally
-  sound but type-confused (`i64.add` on two i32s) will run and produce garbage
-  instead of being rejected. This is a correctness gap and no memory-safety one.
+- Multi-value blocks. Operand types are validated now, but the block type
+  immediate is one byte, so a block declares 0 or 1 results and never
+  parameters. That is where the MVP limit sits.
 - Speed. A switch-dispatch loop over the original bytes. No threading of the
   interpreter, no superinstructions, no JIT.
 - Post-MVP proposals. No multi-value, no reference types, no bulk memory, no
@@ -179,9 +194,35 @@ that would make this project's claims external, and it is **not reached**.
       not cloning at test time matters for the same reason `width_table.h` is
       committed in vtparse: a suite whose corpus arrives over the network is
       not a suite.
-- [ ] Full operand *type* validation, not just depth.
+- [x] Full operand *type* validation, not just depth.
       why: the spec suite's `assert_invalid` cases are mostly type errors, so
       the pass rate above cannot move much without this.
+      done: `prepare()` now runs the spec's validation algorithm over a stack
+      of valtypes, with VT_ANY as the polymorphic bottom in unreachable code.
+      And the oracle for it IS external, which this file assumed was
+      impossible: node is installed, so V8 is on this machine. `t/v8check.js`
+      puts every fixture through `WebAssembly.validate` plus compile and
+      instantiate and requires V8's verdict to match what the fixture
+      declares, while `t/run.sh` requires wasmi to match the same
+      declaration. 67 modules: 9 V8 calls valid and wasmi runs, 56 V8 calls
+      invalid and wasmi refuses, 2 V8 calls valid and wasmi refuses on purpose
+      (the f32/f64 modules, which is the unimpl() shape from METHOD.md: the
+      outside authority has to ACCEPT the module before our refusal means
+      anything). Both node v22.23.2 and the system node v20.19.2 agree.
+      Two harness bugs found, the first serious. Every reject fixture named
+      the export `_`, which no module has, so a module that LOADED still
+      exited 2 with "no exported function named" and scored as a rejection:
+      the whole reject direction of this suite, 15 fixtures, had been passing
+      without validating anything since it was written. Fixed in both places:
+      the fixtures name a real export, and `t/run.sh` refuses to read a
+      missing export as a refusal. The second: `t/mkwasm.py` only ever wrote
+      into `t/fix` and never cleaned it, so a renamed fixture stayed behind
+      and was counted by both harnesses.
+      18 mutations of the new validator, all caught. Four needed sharper
+      fixtures first, and all four were vacuous in METHOD.md's sense: the
+      underflow check or the return-type check rejected the module before the
+      rule under test could see it. The sixth buffer-larger-than-its-data case
+      in this collection was also here, in the locals type array.
 - [ ] Reject the malformed-module corpus the spec suite ships
       (`assert_malformed`) with the right distinction between a decode error and
       a validation error.
