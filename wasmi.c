@@ -795,7 +795,11 @@ static void exec(uint32_t fidx, uint32_t base) {
 				uint32_t old = M.mpages;
 				uint64_t want = (uint64_t)old + d;
 				if (want > M.mmaxpages || want > MAX_PAGES) { PUSH((uint32_t)-1); break; }
-				uint8_t *nm = realloc(M.mem, (size_t)want * PAGE_SIZE + 1);
+				/* Exact size here too, for the reason given at the memory
+				 * section; realloc(p, 0) may free and return NULL, so only
+				 * the genuinely-zero case gets a byte. */
+				size_t nb = (size_t)want * PAGE_SIZE;
+				uint8_t *nm = realloc(M.mem, nb ? nb : 1);
 				if (!nm) { PUSH((uint32_t)-1); break; }
 				memset(nm + (size_t)old * PAGE_SIZE, 0, (size_t)(want - old) * PAGE_SIZE);
 				M.mem = nm; M.mpages = (uint32_t)want;
@@ -1009,8 +1013,13 @@ static void load_module(const uint8_t *buf, size_t len) {
 			if (n) {
 				uint32_t mn, mx; limits(&s, &mn, &mx, MAX_PAGES);
 				M.mpages = mn; M.mmaxpages = mx; M.has_mem = 1;
-				/* +1 so mem_at() of a zero-page memory still yields a valid pointer. */
-				M.mem = xcalloc((size_t)mn * PAGE_SIZE + 1, 1);
+				/* Exactly the declared size, no slack.  This used to allocate
+				 * one spare byte so that a zero-page memory still produced a
+				 * valid pointer, which xcalloc() already guarantees on its
+				 * own -- and the spare byte put a one-byte overrun of wasm
+				 * linear memory, the most attacker-reachable buffer here,
+				 * inside a live allocation where ASan cannot see it. */
+				M.mem = xcalloc((size_t)mn * PAGE_SIZE, 1);
 			}
 			break;
 		}

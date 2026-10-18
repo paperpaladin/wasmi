@@ -33,7 +33,7 @@ WASMI=${WASMI:-./wasmi}
 # Same convention as cmark's t/sections.expected and xmlc's t/suite.expected:
 # when mkwasm.py deliberately grows the corpus, this number moves with it, in
 # the same commit.
-CASES_EXPECTED=11904
+CASES_EXPECTED=11910
 cases=$(cat t/fix/*.cases 2>/dev/null | grep -cvE '^[[:space:]]*(#|$)')
 if [ "$cases" -ne "$CASES_EXPECTED" ]; then
 	printf 'run.sh: t/fix catalogues %d cases, expected %d.\n' \

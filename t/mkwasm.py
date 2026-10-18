@@ -909,6 +909,33 @@ def s_globals():
     return emit("globals", m, cases)
 
 
+# ------------------------------------------------------- zero-page memory
+# A memory declared with 0 pages.  This is the case the linear-memory
+# allocation used to carry a spare byte for ("+1 so mem_at() of a zero-page
+# memory still yields a valid pointer"), and nothing exercised it.  The spare
+# byte is gone -- xcalloc already returns a valid pointer for a zero size --
+# so this fixture is what keeps the exact-size allocation honest, together
+# with the oob cases below, which read at offset 0 of a memory that has no
+# offset 0.
+@suite
+def s_mem0():
+    m = Mod()
+    m.mem = (0, None)
+    m.func("size", [], ["i32"], "memory.size\nend")
+    m.func("ld", ["i32"], ["i32"], "local.get 0\ni32.load8_u\nend")
+    m.func("st", ["i32"], [], "local.get 0\ni32.const 7\ni32.store8\nend")
+    # memory.grow from zero pages: the realloc path whose size is 0 bytes
+    # before it grows.  Returns the OLD size, so 0.
+    m.func("grow", ["i32"], ["i32"], "local.get 0\nmemory.grow\nend")
+    cases = [
+        ("0", "size", []),
+        ("trap:oob", "ld", [0]), ("trap:oob", "ld", [1]),
+        ("trap:oob", "st", [0]),
+        ("0", "grow", [0]), ("0", "grow", [1]),
+    ]
+    return emit("mem0", m, cases)
+
+
 # ------------------------------------------------------------ type validation
 # Both directions of the claim, kept apart on purpose: a validator that
 # rejects everything satisfies the "rejects the bad" half perfectly.

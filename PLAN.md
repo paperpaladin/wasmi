@@ -55,7 +55,7 @@ installed on this machine the whole time.
 0. V8, through node. REACHED, for validity only. V8 is a production
    WebAssembly implementation written by people who have never seen this code,
    and `WebAssembly.validate` is its spec validator. `t/v8check.js` asks it
-   about all 67 fixtures and requires its accept/reject verdict to match the
+   about all 68 fixtures and requires its accept/reject verdict to match the
    fixture's declaration; `t/run.sh` requires wasmi to match the same
    declaration, so the two together compare wasmi against V8. What it proves:
    every module this suite calls well formed really is valid WebAssembly, and
@@ -73,7 +73,7 @@ installed on this machine the whole time.
    a `.wat` assembler, neither of which exists here, though V8 can now stand
    in for the latter's validity check.
 
-2. A differential fixture suite against Python (11,904 cases). For every
+2. A differential fixture suite against Python (11,910 cases). For every
    case, `t/mkwasm.py` assembles a `.wasm` binary *and* computes the expected
    answer in Python, from Python semantics, with the wrapping and the truncating
    division spelled out explicitly. This is a genuine differential test. Two
@@ -204,7 +204,7 @@ installed on this machine the whole time.
       puts every fixture through `WebAssembly.validate` plus compile and
       instantiate and requires V8's verdict to match what the fixture
       declares, while `t/run.sh` requires wasmi to match the same
-      declaration. 67 modules: 9 V8 calls valid and wasmi runs, 56 V8 calls
+      declaration. 68 modules: 10 V8 calls valid and wasmi runs, 56 V8 calls
       invalid and wasmi refuses, 2 V8 calls valid and wasmi refuses on purpose
       (the f32/f64 modules, which is the unimpl() shape from METHOD.md: the
       outside authority has to ACCEPT the module before our refusal means
@@ -221,8 +221,10 @@ installed on this machine the whole time.
       18 mutations of the new validator, all caught. Four needed sharper
       fixtures first, and all four were vacuous in METHOD.md's sense: the
       underflow check or the return-type check rejected the module before the
-      rule under test could see it. The sixth buffer-larger-than-its-data case
-      in this collection was also here, in the locals type array.
+      rule under test could see it. The sixth and seventh buffer-larger-than-its-data
+      cases in this collection were also here: the locals type array, and
+      then, found by scanning for the shape rather than for the function just
+      fixed, linear memory itself, allocated as pages*65536+1.
 - [ ] Reject the malformed-module corpus the spec suite ships
       (`assert_malformed`) with the right distinction between a decode error and
       a validation error.

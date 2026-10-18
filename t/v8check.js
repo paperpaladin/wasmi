@@ -38,7 +38,7 @@ const SCOPE_REFUSALS = {
 
 // Pinned, like CASES_EXPECTED in t/run.sh: a corpus that quietly shrinks must
 // turn the suite red rather than report a smaller perfect score.
-const EXPECT = { accept: 9, reject: 56, scope: 2 };
+const EXPECT = { accept: 10, reject: 56, scope: 2 };
 
 let accept = 0, reject = 0, scope = 0;
 const bad = [];

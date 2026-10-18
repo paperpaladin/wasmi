@@ -27,13 +27,13 @@ rm -f wasmi wasmi-asan
 rm -rf t/fix
 cc -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -o wasmi wasmi.c
 python3 t/mkwasm.py
-mkwasm: 67 fixtures, 11904 cases
-t/fix: 11904 cases in 67 modules, matching the pinned count
-v8check: 67 modules through V8 v22.23.2
-  accept direction: 9 modules V8 calls valid and wasmi runs
+mkwasm: 68 fixtures, 11910 cases
+t/fix: 11910 cases in 68 modules, matching the pinned count
+v8check: 68 modules through V8 v22.23.2
+  accept direction: 10 modules V8 calls valid and wasmi runs
   reject direction: 56 modules V8 calls invalid and wasmi refuses
   out of scope:     2 modules V8 calls valid and wasmi refuses on purpose
-11904 passed, 0 failed
+11910 passed, 0 failed
 ```
 
 And the sanitizer build over the same suite (ASan + UBSan,
@@ -43,13 +43,13 @@ And the sanitizer build over the same suite (ASan + UBSan,
 $ make test-asan
 cc -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -Wall -Wextra -Wpedantic -o wasmi-asan wasmi.c
 python3 t/mkwasm.py
-mkwasm: 67 fixtures, 11904 cases
-t/fix: 11904 cases in 67 modules, matching the pinned count
-v8check: 67 modules through V8 v22.23.2
-  accept direction: 9 modules V8 calls valid and wasmi runs
+mkwasm: 68 fixtures, 11910 cases
+t/fix: 11910 cases in 68 modules, matching the pinned count
+v8check: 68 modules through V8 v22.23.2
+  accept direction: 10 modules V8 calls valid and wasmi runs
   reject direction: 56 modules V8 calls invalid and wasmi refuses
   out of scope:     2 modules V8 calls valid and wasmi refuses on purpose
-11904 passed, 0 failed
+11910 passed, 0 failed
 ```
 
 ## Why this exists
@@ -95,7 +95,7 @@ one of them:
 
 | direction | count | claim |
 |---|---|---|
-| accept | 9 modules | V8 calls them valid, and `wasmi` loads and runs them |
+| accept | 10 modules | V8 calls them valid, and `wasmi` loads and runs them |
 | reject | 56 modules | V8 calls them invalid, and `wasmi` refuses them |
 | out of scope | 2 modules | V8 calls them **valid**, and `wasmi` refuses them on purpose |
 
@@ -115,7 +115,7 @@ unrelated jobs. It assembles `.wasm` binaries from a flat instruction listing
 (there is no `wat2wasm` here, so fixtures have to be built by hand), and it
 contains a second implementation of the arithmetic in plain Python, explicit
 32/64-bit masking, explicit truncating division, explicit shift-count modulo. For
-every one of the 11,904 cases, the expected answer comes out of the Python, and
+every one of the 11,910 cases, the expected answer comes out of the Python, and
 `wasmi` then has to agree with it. No expected value was ever captured from a run
 of `wasmi`. That is what makes it a differential test, not a snapshot of
 whatever the C happens to do.
@@ -213,7 +213,7 @@ A second, smaller one in the same area: `t/mkwasm.py` only ever wrote into
 was counted by the pinned case count and by `t/v8check.js`, and would have
 been committed. It now clears the directory first.
 
-### The oversized buffer, case six
+### The oversized buffer, cases six and seven
 
 This collection has found five previous cases where a rounded-up allocation
 made ASan blind to an overrun. This is the sixth. The per-function array of
@@ -226,6 +226,45 @@ byte read as 0, which is the validator's code for the polymorphic unknown
 type; trimmed to `nlocals` with one `realloc`, ASan names the line. The array
 is trimmed, and `t/fix/ty_local_past.wasm` is a permanent fixture reading one
 past the end so that the trim stays load-bearing.
+
+Case seven was found by then scanning for the *shape* rather than for the
+function that had just been fixed, which is the lesson `jsonc` recorded when
+its second oversized buffer sat one function away from the first. Linear
+memory was allocated as `pages * 65536 + 1`:
+
+```c
+/* +1 so mem_at() of a zero-page memory still yields a valid pointer. */
+M.mem = xcalloc((size_t)mn * PAGE_SIZE + 1, 1);
+```
+
+That is the most attacker-reachable buffer in the program -- a wasm address
+indexes straight into it -- and the spare byte meant a one-byte overrun landed
+inside a live allocation. The stated reason for the `+1` was already handled
+elsewhere: `xcalloc` does `calloc(n ? n : 1, ...)`, so a zero-page memory
+produces a valid pointer without it. Measured both ways with the bounds check
+in `mem_at` deliberately widened by one and a 1-byte load at offset 65536 of a
+one-page memory: with the `+1`, the load returned 0 and ASan said nothing;
+with the exact size, ASan reports a heap-buffer-overflow and names the line.
+`memory.grow` had the same `+ 1` and is trimmed the same way, keeping a single
+byte only for the genuinely-zero case, since `realloc(p, 0)` may free and
+return NULL.
+
+The existing `trap:oob` boundary fixtures already catch a widened bounds check
+by value (6 failures), so this was never a live bug. What it was is a
+sanitizer that had been reporting clean over an area one byte smaller than it
+looked, on the one buffer where that matters most.
+
+**A surviving mutation, stated rather than hidden.** Putting the `+ 1` back
+turns no test red. It cannot: an oversized allocation changes no value, it
+only removes the sanitizer's ability to see past the real end, and no suite
+can observe the absence of a diagnostic for a bug that is not currently
+planted. The same is true of the locals array in case six, except that there
+the planted-defect pair is cheap to re-run by hand. So the protection here is
+a comment at each allocation saying why the size is exact, plus
+`t/fix/mem0.wasm`, which at least fails loudly if a zero-page memory stops
+working -- that being the only reason the spare byte was ever added. Treat
+re-introducing a rounded-up buffer in this file as something review has to
+catch, not the suite.
 
 The one real bug the fixtures caught before any of this, for the record, was
 not an arithmetic disagreement: it was a one-element out-of-bounds read in the validation pass
@@ -259,7 +298,7 @@ Works:
   unreachable code, untyped `select`, block and loop result types, the rule
   that a branch to a `loop` label takes the loop's parameters and not its
   results, and `br_table`'s requirement that every target agree with the
-  default. V8 agrees with the verdict on all 67 fixtures.
+  default. V8 agrees with the verdict on all 68 fixtures.
 - Traps, all of which unwind cleanly via `setjmp`/`longjmp` and exit 1 rather
   than taking the host down: `div0`, `int-overflow`, `oob`, `unreachable`,
   `undefined-element`, `uninitialized-element`,
